@@ -20,13 +20,22 @@
 
 ]]
 
+local crypt = require "crypt"
+local crc32 = crypt.crc32
+
 local sys = require "sys"
 local new_tab = sys.new_tab
+local now = sys.now
+
+local type = type
 
 local ipairs = ipairs
 local assert = assert
 
 local concat = table.concat
+
+local toint = math.tointeger
+local random = math.random
 
 local strpack = string.pack
 local strunpack = string.unpack
@@ -102,12 +111,12 @@ local FLAGS_TRANSFER_TAB = {
 }
 
 local SETTINGS_TAB = {
-	["SETTINGS_HEADER_TABLE_SIZE"] = 4096,
+	["SETTINGS_HEADER_TABLE_SIZE"] = 8192,
 	["SETTINGS_ENABLE_PUSH"] = 1,
 	["SETTINGS_MAX_CONCURRENT_STREAMS"] = 100,
 	["SETTINGS_INITIAL_WINDOW_SIZE"] = 65535,
-	["SETTINGS_MAX_FRAME_SIZE"] = 16384,
-	["SETTINGS_MAX_HEADER_LIST_SIZE "] = 8192,
+	["SETTINGS_MAX_FRAME_SIZE"] = 2^24 - 1,
+	["SETTINGS_MAX_HEADER_LIST_SIZE"] = 8192,
 
 	[0x01] = "SETTINGS_HEADER_TABLE_SIZE",      -- 允许发送者通知远端，用于解码首部块的首部压缩表的最大大小(以字节为单位): 初始值是4096字节;
 	[0x02] = "SETTINGS_ENABLE_PUSH",            -- 这个设置项可被用于禁用服务端推送： 1为允许服务端推送, 0为不允许;
@@ -174,6 +183,14 @@ Frame Payload : 是帧主体内容由帧类型决定;
 
 ]]
 
+-- 必须遵守此stream id递增规则
+local function new_stream_id(num)
+  if not toint(num) or num <= 1 then
+    return 1
+  end
+  return (num + 2) & 2147483647
+end
+
 local function sock_read(sock, bytes)
 	local buffers = new_tab(16, 0)
 	while 1 do
@@ -218,17 +235,21 @@ local function read_magic(sock)
 	return msg == MAGIC
 end
 
--- 读取general包头部
+local function send_magic(sock)
+  return sock_write(sock, MAGIC)
+end
+
+-- 读取通用包头部
 local function read_head(sock)
 	local head = sock_read(sock, 9)
 	if not head then
 		return nil, "The peer closed the connection during receiving `head` data."
 	end
-	local length, type, flags, reserved, stream_id = strunpack(">I3BBBI3", head)
-	return { length = length, type = type, type_name = TYPE_TAB[type], flags = flags, reserved = reserved, stream_id = stream_id }
+	local length, type, flags, bit = strunpack(">I3BBI4", head)
+	return { length = length, type = type, type_name = TYPE_TAB[type], flags = flags, reserved = bit >> 31, stream_id = bit & 2147483647 }
 end
 
--- 读取data包内容
+-- 读取DATA包内容
 local function read_data(sock, head)
 	if not head then
 		local err
@@ -241,7 +262,7 @@ local function read_data(sock, head)
 	return sock_read(sock, head.length)
 end
 
--- 读取headers包内容
+-- 读取HEADERS包内容
 local function read_headers(sock, head)
 	if not head then
 		local err
@@ -254,7 +275,7 @@ local function read_headers(sock, head)
 	return sock_read(sock, head.length)
 end
 
--- 读取settings包内容
+-- 读取SETTINGS包内容
 local function read_settings(sock, head)
 	if not head then
 		local err
@@ -282,6 +303,24 @@ local function read_settings(sock, head)
 	return setings
 end
 
+-- 发送SETTINGS包内容
+local function send_settings(sock, flags, settings)
+  local payload = ""
+  if type(settings) == 'table' and #settings > 0 then
+    local payloads = new_tab(#settings, 0)
+    for _, item in ipairs(settings) do
+      -- print(item[1], item[2])
+      payloads[#payloads+1] = strpack(">I2I4", item[1], item[2])
+    end
+    payload = concat(payloads)
+  end
+  return sock_write(sock, strpack( ">I3BBI4", #payload, 0x04, flags or 0x00, 0x00) .. payload )
+end
+
+local function send_settings_ack(sock)
+  return send_settings(sock, 0x01)
+end
+
 -- 读取GOAWAY包内容
 local function read_goaway(sock, head)
 	if not head then
@@ -303,10 +342,15 @@ local function read_goaway(sock, head)
 	local promised, errcode = strunpack(">I4", packet)
 	return {
 		errcode = errcode,
-		strerror = ERRNO_TAB[errcode],
+		errinfo = ERRNO_TAB[errcode],
 		promised_reserved = promised >> 31,
 		promised_stream_id = promised & 0x7FFFFFFF,
 	}
+end
+
+-- 发送GOAWAY包
+local function send_goaway(sock, tid)
+  return sock_write(sock, strpack(">I3BBI4I4I4", 8, 0x07, 0x00, 0x00, 0x00, tid or 0x00))
 end
 
 -- 读取WINDOW_UPDATE包内容
@@ -335,35 +379,12 @@ local function read_window_update(sock, head)
 	}
 end
 
-local function send_settings(sock, flags, settings)
-	local payload = ""
-	if type(settings) == 'table' and #settings > 0 then
-		local payloads = new_tab(#settings, 0)
-		for _, item in ipairs(settings) do
-			payloads[#payloads+1] = strpack(">I2I4", item[1], item[2])
-		end
-		payload = concat(payloads)
-	end
-	return sock_write(sock, strpack( ">I3BBBI3", #payload, 0x04, flags, 0x00, 0x00 ) .. payload )
+local function send_headers(sock, flags, stream_id, payload)
+  local sid = new_stream_id(stream_id)
+  sock_write(sock, strpack(">I3BBBI4", #payload, 0x01, flags or 0x05, sid) .. payload )
+  return sid
 end
 
-local function send_settings_ack(sock)
-	return send_settings(sock, 0x01)
-end
-
-local function send_headers(sock, flags, headers)
-	assert(nil, "need implement.")
-end
-
-local function send_headers1(sock, flags, headers)
-	local payload = "\x82\x84\x86\x41\x86\xa0\xe4\x1d\x13\x9d\x09\x7a\x88\x25\xb6\x50\xc3\xab\xba\x15\xc3\x53\x03\x2a\x2f\x2a"
-	return sock_write(sock, strpack(">I3BBBI3", #payload, 0x01, flags, 0x00, 0x01) .. payload )
-end
-
-local function send_headers2(sock, flags, headers)
-	local payload = "\x82\x04\x87\x61\xb0\x79\x5e\x74\xd3\x47\x86\x41\x86\xa0\xe4\x1d\x13\x9d\x09\x7a\x88\x25\xb6\x50\xc3\xab\xba\x15\xc3\x53\x03\x2a\x2f\x2a"
-	return sock_write(sock, strpack(">I3BBBI3", #payload, 0x01, flags, 0x00, 0x01) .. payload )
-end
 
 return {
 	version = "0.1",
@@ -378,20 +399,22 @@ return {
 	flag_to_table = flag_to_table,
 
 	-- 
-	read_magic = read_magic,
 	read_head = read_head,
 
 	read_data = read_data,
-	read_goaway = read_goaway,
 	read_window_update = read_window_update,
 
+  read_magic = read_magic,
+  send_magic = send_magic,
+
+  read_settings = read_settings,
 	send_settings = send_settings,
 	send_settings_ack = send_settings_ack,
-	read_settings = read_settings,
-
+	
 	send_headers = send_headers,
-	-- send_headers = send_headers1,
-	-- send_headers = send_headers2,
 	read_headers = read_headers,
+
+  read_goaway = read_goaway,
+  send_goaway = send_goaway,
 }
 

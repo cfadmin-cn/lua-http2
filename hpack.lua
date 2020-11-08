@@ -14,28 +14,14 @@
 
   Author: CandyMi[https://github.com/candymi]
 
+依赖项目地址:
+
+  https://github.com/CandyMi/lhpack and `nghttp2`.
+
 编写日期:
 
   2020-11-06
 
 ]]
 
-local assert = assert
-
-local class = require "class"
-
-local hpack = class("hpack")
-
-function hpack:ctor(...)
-	self.tab = nil
-end
-
-function hpack:encode(list)
-	assert(nil, "need implement `encode` method .")
-end
-
-function hpack:decode(list)
-	assert(nil, "need implement `decode` method .")
-end
-
-return hpack
+return require "lhpack"

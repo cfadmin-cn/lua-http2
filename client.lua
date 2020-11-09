@@ -100,13 +100,17 @@ function client.handshake(sock)
   return settings
 end
 
+function client.close(sock)
+  return send_goaway(sock, 0x00) and sock:close()
+end
 
-function client.connect(sock, domain, port)
-  local ok, err = sock:connect(domain, port)
+
+function client.connect(sock, opt)
+  local ok, err = sock:connect(opt.host, opt.port)
   if not ok then
     return nil, err
   end
-  return client.handshake(sock)
+  return client.handshake(sock, opt)
 end
 
 function client.send_request(sock, ctx)

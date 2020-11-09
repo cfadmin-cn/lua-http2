@@ -302,7 +302,10 @@ local function read_settings(sock, head)
 			return nil, "The peer closed the connection while receiving `settings` payload."
 		end
 		local k, v = strunpack(">I2I4", packet)
-		setings[SETTINGS_TAB[k]] = v
+		local key = SETTINGS_TAB[k]
+		if key then
+			setings[key] = v
+		end
 	end
 	return setings
 end
@@ -335,20 +338,22 @@ local function read_goaway(sock, head)
 		end
 	end
 	assert(head.type == TYPE_TAB.GOAWAY, "Invalid `goaway` packet.")
-	local len = head.length
-	if not len or len ~= 8 then
-		return {}
-	end
 	local packet = sock_read(sock, 8)
 	if not packet then
 		return nil, "The peer closed the connection while receiving `goaway` payload."
 	end
+	len = len - 8
 	local promised, errcode = strunpack(">I4", packet)
+	local trace
+	if len > 0 then
+		trace = sock_read(sock, len)
+	end
 	return {
 		errcode = errcode,
 		errinfo = ERRNO_TAB[errcode],
 		promised_reserved = promised >> 31,
 		promised_stream_id = promised & 0x7FFFFFFF,
+		trace = trace,
 	}
 end
 

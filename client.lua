@@ -152,8 +152,8 @@ function client.send_request(ctx)
   local sock = ctx.sock
   local sid = new_stream_id(ctx.sid)
   -- return send_headers(sock, 0x05, sid, ctx.hpack:encode(ctx.headers)) and send_settings_ack(sock) and sid or false
-  send_settings_ack(sock)
   send_headers(sock, 0x05, sid, ctx.hpack:encode(ctx.headers))
+  send_settings_ack(sock)
   return sid
   -- send_settings_ack(sock)
 end

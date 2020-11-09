@@ -34,7 +34,6 @@ local assert = assert
 
 local concat = table.concat
 
-local toint = math.tointeger
 local random = math.random
 
 local strpack = string.pack
@@ -72,8 +71,8 @@ local TYPE_TAB = {
 local FLAGS_TRANSFER_TAB = {
 	[0x00] = function (flags)
 		return {
-			end_stream = flags & 0x01 == 0x01 and true or false,
-			padded = flags & 0x08 == 0x08 and true or false
+			end_stream = flags & 0x01 == 0x01 and true,
+			padded = flags & 0x08 == 0x08 and true,
 		}
 	end,
 	[0x01] = function (flags)
@@ -114,7 +113,7 @@ local SETTINGS_TAB = {
 	["SETTINGS_HEADER_TABLE_SIZE"] = 8192,
 	["SETTINGS_ENABLE_PUSH"] = 1,
 	["SETTINGS_MAX_CONCURRENT_STREAMS"] = 100,
-	["SETTINGS_INITIAL_WINDOW_SIZE"] = 65535,
+	["SETTINGS_INITIAL_WINDOW_SIZE"] = 2^24 - 1,
 	["SETTINGS_MAX_FRAME_SIZE"] = 2^24 - 1,
 	["SETTINGS_MAX_HEADER_LIST_SIZE"] = 8192,
 
@@ -183,14 +182,6 @@ Frame Payload : 是帧主体内容由帧类型决定;
 
 ]]
 
--- 必须遵守此stream id递增规则
-local function new_stream_id(num)
-  if not toint(num) or num <= 1 then
-    return 1
-  end
-  return (num + 2) & 2147483647
-end
-
 local function sock_read(sock, bytes)
 	local buffers = new_tab(16, 0)
 	while 1 do
@@ -223,7 +214,7 @@ local function flag_to_table(frame_name, flags)
 	if not convert then
 		return
 	end
-	return convert(fcode, flags)
+	return convert(flags)
 end
 
 -- 读取通用包头部
@@ -285,10 +276,7 @@ end
 
 -- 发送HEADERS包
 local function send_headers(sock, flags, stream_id, payload)
-  local sid = new_stream_id(stream_id)
-  send_head(sock, #payload, TYPE_TAB["HEADERS"], flags or 0x05, sid)
-  send_body(sock, body)
-  return sid
+  return send_head(sock, #payload, TYPE_TAB["HEADERS"], flags or 0x05, stream_id) and send_body(sock, payload)
 end
 
 -- 读取SETTINGS包内容
@@ -391,8 +379,33 @@ local function read_window_update(sock, head)
 	return {
 		head = head,
 		reserved = bit >> 31,             -- 记录高1位
-		window_size = bit & 0x7FFFFFFF,   -- 记录低31位
+		window_size = bit & 2^31 - 1,     -- 记录低31位
 	}
+end
+
+-- 发送WINDOW_UPDATE包
+local function send_window_update(sock, window_size)
+	return send_head(sock, 4, TYPE_TAB.WINDOW_UPDATE, 0x00, 0x00) and send_body(sock, strpack(">I4", window_size or 1 << 24))
+end
+
+-- 读取RST_STREAM包
+local function read_rstframe(sock, head)
+	if not head then
+		local err
+		head, err = read_head(sock)
+		if not head then
+			return nil, err
+		end
+	end
+	assert(head.type == TYPE_TAB.RST_STREAM, "Invalid `RST_STREAM` packet.")
+	local packet = sock_read(sock, head.length)
+	local errcode = strunpack(">I4", packet)
+	return { errcode = errcode, errinfo = ERRNO_TAB[errcode] }
+end
+
+
+local function send_rstframe(sock, stream_id, errno)
+	return send_head(sock, 4, TYPE_TAB.RST_STREAM, 0x00, stream_id) and send_body(sock, strpack(">I4", errno or ERRNO_TAB["NO_ERROR"]))
 end
 
 return {
@@ -409,9 +422,10 @@ return {
 
 	-- 
 	read_head = read_head,
-
 	read_data = read_data,
+
 	read_window_update = read_window_update,
+	send_window_update = send_window_update,
 
   read_magic = read_magic,
   send_magic = send_magic,
@@ -425,5 +439,8 @@ return {
 
   read_goaway = read_goaway,
   send_goaway = send_goaway,
+
+  read_rstframe = read_rstframe,
+  send_rstframe = send_rstframe,
 }
 

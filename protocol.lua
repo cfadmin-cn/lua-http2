@@ -39,6 +39,8 @@ local random = math.random
 local strpack = string.pack
 local strunpack = string.unpack
 
+local empty_table = {}
+
 -- HTTP2 MAGIC : 
 local MAGIC = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 -- local MAGIC = "\x50\x52\x49\x20\x2a\x20\x48\x54\x54\x50\x2f\x32\x2e\x30\x0d\x0a\x0d\x0a\x53\x4d\x0d\x0a\x0d\x0a"
@@ -84,28 +86,28 @@ local FLAGS_TRANSFER_TAB = {
 		}
 	end,
 	[0x02] = function (flags)
-		return {}
+		return empty_table
 	end,
 	[0x03] = function (flags)
-		return {}
+		return empty_table
 	end,
 	[0x04] = function (flags)
 		return { ack = flags == 0x01 and true or false }
 	end,
 	[0x05] = function (flags)
-		return {}
+		return empty_table
 	end,
 	[0x06] = function (flags)
-		return {}
+		return empty_table
 	end,
 	[0x07] = function (flags)
-		return {}
+		return empty_table
 	end,
 	[0x08] = function (flags)
-		return {} -- All reserved
+		return empty_table -- All reserved
 	end,
 	[0x09] = function (flags)
-		return {}
+		return empty_table
 	end,
 }
 

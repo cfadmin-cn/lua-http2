@@ -72,14 +72,14 @@ function client.handshake(sock, opt)
     -- SET CONCURRENT STREAM
     {0x03, opt.SETTINGS_MAX_CONCURRENT_STREAMS or SETTINGS_TAB["SETTINGS_MAX_CONCURRENT_STREAMS"]},
     -- SET WINDOWS SIZE
-    {0x04, 1073741821 or opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
+    {0x04, 1073741824 or opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
     -- SET MAX FRAME SIZE
     -- {0x05, opt.SETTINGS_MAX_FRAME_SIZE or SETTINGS_TAB["SETTINGS_MAX_FRAME_SIZE"]},
     -- SET SETTINGS MAX HEADER LIST SIZE
     -- {0x06, opt.SETTINGS_MAX_HEADER_LIST_SIZE or SETTINGS_TAB["SETTINGS_MAX_HEADER_LIST_SIZE"]},
   })
 
-  send_window_update(sock, 2 ^ 24 - 1)
+  send_window_update(sock, 1073676289) -- 2 ^ 24 - 1)
 
   local settings
 
@@ -150,11 +150,9 @@ end
 function client.send_request(ctx)
   local sock = ctx.sock
   local sid = new_stream_id(ctx.sid)
-  -- return send_headers(sock, 0x05, sid, ctx.hpack:encode(ctx.headers)) and send_settings_ack(sock) and sid or false
-  send_headers(sock, 0x05, sid, ctx.hpack:encode(ctx.headers))
-  -- send_settings_ack(sock)
+  -- send_headers(sock, 0x05, sid, "\x82\x84\x86\x41\x88\xaa\x69\xd2\x9a\xc4\xb9\xec\x9b\x7a\x88\x25\xb6\x50\xc3\xab\xb8\xd2\xe1\x53\x03\x2a\x2f\x2a")
+  send_headers(sock, 0x05, sid, ctx.headers)
   return sid
-  -- send_settings_ack(sock)
 end
 
 function client.dispatch_all(ctx)

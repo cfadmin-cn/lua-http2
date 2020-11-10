@@ -187,7 +187,7 @@ local function sock_read(sock, bytes)
 	while 1 do
 		local buffer = sock:recv(bytes)
 		buffers[#buffers+1] = buffer
-		if bytes >= #buffer then
+		if bytes <= #buffer then
 			break
 		end
 		bytes = bytes - #buffer

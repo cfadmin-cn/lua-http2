@@ -113,7 +113,7 @@ function client.handshake(sock, opt)
       end
     end
     if tname == "GOAWAY" then
-      local info = read_goaway(sock, header)
+      local info = read_goaway(sock, head)
       return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
     end
   end

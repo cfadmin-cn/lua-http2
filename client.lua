@@ -62,8 +62,6 @@ function client.handshake(sock, opt)
   -- SEND MAGIC BYTES
   send_magic(sock)
 
-  -- send_window_update(sock, 2 ^ 24 - 1)
-
   -- SEND SETTINS
   send_settings(sock, nil, {
     -- SET TABLE SISZE
@@ -74,12 +72,14 @@ function client.handshake(sock, opt)
     -- SET CONCURRENT STREAM
     {0x03, opt.SETTINGS_MAX_CONCURRENT_STREAMS or SETTINGS_TAB["SETTINGS_MAX_CONCURRENT_STREAMS"]},
     -- SET WINDOWS SIZE
-    {0x04, opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
+    {0x04, 1073741821 or opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
     -- SET MAX FRAME SIZE
     -- {0x05, opt.SETTINGS_MAX_FRAME_SIZE or SETTINGS_TAB["SETTINGS_MAX_FRAME_SIZE"]},
     -- SET SETTINGS MAX HEADER LIST SIZE
     -- {0x06, opt.SETTINGS_MAX_HEADER_LIST_SIZE or SETTINGS_TAB["SETTINGS_MAX_HEADER_LIST_SIZE"]},
   })
+
+  send_window_update(sock, 2 ^ 24 - 1)
 
   local settings
 
@@ -96,6 +96,7 @@ function client.handshake(sock, opt)
     end
     if tname == "SETTINGS" then
       if head.length == 0 then
+        send_settings_ack(sock)
         break
       end
       local s, errno = read_settings(sock, head)
@@ -113,15 +114,13 @@ function client.handshake(sock, opt)
     end
     if tname == "GOAWAY" then
       local info = read_goaway(sock, header)
-      return nil, fmt("{ errcode = %d, errinfo = '%s'}", info.errno, info.errinfo)
+      return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
     end
   end
 
   if type(settings) ~= 'table' then
     return nil, "Invalid Handshake"
   end
-
-  send_settings_ack(sock)
 
   for key, value in pairs(SETTINGS_TAB) do
     if type(key) == 'string' and not settings[key] then
@@ -153,7 +152,7 @@ function client.send_request(ctx)
   local sid = new_stream_id(ctx.sid)
   -- return send_headers(sock, 0x05, sid, ctx.hpack:encode(ctx.headers)) and send_settings_ack(sock) and sid or false
   send_headers(sock, 0x05, sid, ctx.hpack:encode(ctx.headers))
-  send_settings_ack(sock)
+  -- send_settings_ack(sock)
   return sid
   -- send_settings_ack(sock)
 end
@@ -172,7 +171,7 @@ function client.dispatch_all(ctx)
     local tname = TYPE_TAB[head.type]
     if tname == "GOAWAY" then
       local info = read_goaway(sock, head)
-      error(fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo))
+      error(fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or ''))
     end
     if tname == "RST_STREAM" then
       local info = read_rstframe(sock, head)

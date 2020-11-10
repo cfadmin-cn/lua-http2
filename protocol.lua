@@ -342,12 +342,11 @@ local function read_goaway(sock, head)
 	if not packet then
 		return nil, "The peer closed the connection while receiving `goaway` payload."
 	end
-	len = len - 8
-	local promised, errcode = strunpack(">I4", packet)
-	local trace
-	if len > 0 then
-		trace = sock_read(sock, len)
-	end
+  local trace
+  local promised, errcode = strunpack(">I4", packet)
+  if head.length > 8 then
+    trace = sock_read(sock, head.length - 8)
+  end
 	return {
 		errcode = errcode,
 		errinfo = ERRNO_TAB[errcode],

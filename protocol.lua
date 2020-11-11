@@ -41,6 +41,8 @@ local strunpack = string.unpack
 
 local empty_table = {}
 
+local ONLY_HTTP_1_1 = { version = 1.1 }
+
 -- HTTP2 MAGIC : 
 local MAGIC = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 -- local MAGIC = "\x50\x52\x49\x20\x2a\x20\x48\x54\x54\x50\x2f\x32\x2e\x30\x0d\x0a\x0d\x0a\x53\x4d\x0d\x0a\x0d\x0a"
@@ -228,8 +230,11 @@ local function read_head(sock)
   if not head then
     return nil, "The peer closed the connection during receiving `head` data."
   end
-  local length, type, flags, bit = strunpack(">I3BBI4", head)
-  return { length = length, type = type, type_name = TYPE_TAB[type], flags = flags, reserved = bit >> 31, stream_id = bit & 2147483647 }
+  local length, t, flags, bit = strunpack(">I3BBI4", head)
+  if head == "HTTP/1.1 " or head == "<!DOCTYPE" or t > #TYPE_TAB then
+    return ONLY_HTTP_1_1
+  end
+  return { length = length, type = t, type_name = TYPE_TAB[t], flags = flags, reserved = bit >> 31, stream_id = bit & 2147483647 }
 end
 
 local function send_head(sock, length, type, flags, sid)

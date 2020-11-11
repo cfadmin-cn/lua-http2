@@ -95,7 +95,10 @@ local FLAGS_TRANSFER_TAB = {
 		return { ack = flags == 0x01 and true or false }
 	end,
 	[0x05] = function (flags)
-		return empty_table
+		return {
+			end_headers = flags & 0x04 == 0x04 and true or false,
+			padded = flags & 0x08 == 0x08 and true or false,
+		}
 	end,
 	[0x06] = function (flags)
 		return empty_table
@@ -354,6 +357,7 @@ local function read_goaway(sock, head)
 		errinfo = ERRNO_TAB[errcode],
 		promised_reserved = promised >> 31,
 		promised_stream_id = promised & 0x7FFFFFFF,
+		head = head,
 		trace = trace,
 	}
 end
@@ -406,7 +410,27 @@ local function read_rstframe(sock, head)
 	assert(head.type == TYPE_TAB.RST_STREAM, "Invalid `RST_STREAM` packet.")
 	local packet = sock_read(sock, head.length)
 	local errcode = strunpack(">I4", packet)
-	return { errcode = errcode, errinfo = ERRNO_TAB[errcode] }
+	return { head = head, errcode = errcode, errinfo = ERRNO_TAB[errcode] }
+end
+
+
+-- 读取promise帧
+local function read_promise(sock, head)
+	if not head then
+		local err
+		head, err = read_head(sock)
+		if not head then
+			return nil, err
+		end
+	end
+	assert(head.type == TYPE_TAB.PUSH_PROMISE, "Invalid `PUSH_PROMISE` packet.")
+	local packet = sock_read(sock, 4)
+	if not packet then
+		return nil, "The peer closed the connection while receiving `PUSH_PROMISE` payload."
+	end
+	local bit = strunpack(">I4", packet)
+	local headers_byte = sock_read(sock, head.length - 4)
+	return bit & 2^31 - 1, headers_byte
 end
 
 
@@ -430,11 +454,13 @@ return {
 	read_head = read_head,
 	read_data = read_data,
 
+  read_magic = read_magic,
+  send_magic = send_magic,
+
 	read_window_update = read_window_update,
 	send_window_update = send_window_update,
 
-  read_magic = read_magic,
-  send_magic = send_magic,
+	read_promise = read_promise,
 
   read_settings = read_settings,
 	send_settings = send_settings,

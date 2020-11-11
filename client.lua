@@ -8,6 +8,10 @@
   2020-11-06
 ]]
 
+local lz = require"lz"
+local uncompress = lz.uncompress
+local gzuncompress = lz.gzuncompress
+
 local http2 = require "protocol.http2.protocol"
 local TYPE_TAB = http2.TYPE_TAB
 local ERRNO_TAB = http2.ERRNO_TAB
@@ -18,6 +22,8 @@ local read_head = http2.read_head
 local read_data = http2.read_data
 
 local send_magic = http2.send_magic
+
+local read_promise = http2.read_promise
 
 local send_rstframe = http2.send_rstframe
 local read_rstframe = http2.read_rstframe
@@ -43,6 +49,7 @@ local pairs = pairs
 
 local fmt = string.format
 local toint = math.tointeger
+local concat = table.concat
 
 -- 必须遵守此stream id递增规则
 local function new_stream_id(num)
@@ -66,20 +73,19 @@ function client.handshake(sock, opt)
   send_settings(sock, nil, {
     -- SET TABLE SISZE
     -- {0x01, opt.SETTINGS_HEADER_TABLE_SIZE or SETTINGS_TAB["SETTINGS_HEADER_TABLE_SIZE"]},
-    -- ENABLE PUSH
-    -- {0x02, opt.SETTINGS_ENABLE_PUSH or SETTINGS_TAB["SETTINGS_ENABLE_PUSH"]},
-    {0x02, 0x00},
+    -- DISABLE PUSH
+    {0x02, 0x00 or opt.SETTINGS_ENABLE_PUSH or SETTINGS_TAB["SETTINGS_ENABLE_PUSH"]},
     -- SET CONCURRENT STREAM
     {0x03, opt.SETTINGS_MAX_CONCURRENT_STREAMS or SETTINGS_TAB["SETTINGS_MAX_CONCURRENT_STREAMS"]},
     -- SET WINDOWS SIZE
-    {0x04, 1073741824 or opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
+    {0x04, opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
     -- SET MAX FRAME SIZE
-    -- {0x05, opt.SETTINGS_MAX_FRAME_SIZE or SETTINGS_TAB["SETTINGS_MAX_FRAME_SIZE"]},
+    {0x05, opt.SETTINGS_MAX_FRAME_SIZE or SETTINGS_TAB["SETTINGS_MAX_FRAME_SIZE"]},
     -- SET SETTINGS MAX HEADER LIST SIZE
-    -- {0x06, opt.SETTINGS_MAX_HEADER_LIST_SIZE or SETTINGS_TAB["SETTINGS_MAX_HEADER_LIST_SIZE"]},
+    {0x06, opt.SETTINGS_MAX_HEADER_LIST_SIZE or SETTINGS_TAB["SETTINGS_MAX_HEADER_LIST_SIZE"]},
   })
 
-  send_window_update(sock, 1073676289) -- 2 ^ 24 - 1)
+  send_window_update(sock, 2 ^ 24 - 1)
 
   local settings
 
@@ -150,14 +156,14 @@ end
 function client.send_request(ctx)
   local sock = ctx.sock
   local sid = new_stream_id(ctx.sid)
-  -- send_headers(sock, 0x05, sid, "\x82\x84\x86\x41\x88\xaa\x69\xd2\x9a\xc4\xb9\xec\x9b\x7a\x88\x25\xb6\x50\xc3\xab\xb8\xd2\xe1\x53\x03\x2a\x2f\x2a")
-  send_headers(sock, 0x05, sid, ctx.headers)
+  send_headers(sock, nil, sid, ctx.headers)
   return sid
 end
 
 function client.dispatch_all(ctx)
   local headers, body
   local sock = ctx.sock
+  local hpack = ctx.hpack
   local waits = ctx.waits
   local response
   while 1 do
@@ -182,18 +188,44 @@ function client.dispatch_all(ctx)
       end
       headers = ctx.hpack:decode(header_bytes)
     end
+    if tname == "PUSH_PROMISE" then
+      local pid, hds = read_promise(sock, head)
+      if pid and hds then
+        -- 拒绝推送流
+        send_rstframe(sock, pid, 0x00)
+        local h = hpack:decode(hds)
+        -- var_dump(h)
+      end
+    end
     if tname == "DATA" then
-
       local tab = flag_to_table("DATA", head.flags)
       if not response then
         if tab.end_stream then
-          return { headers = headers, body = read_data(sock, head) }
+          local body = read_data(sock, head)
+          if type(headers) == 'table' then
+            local compressed = headers["content-encoding"] or headers["Content-Encoding"]
+            if compressed == "gzip" then
+              body = gzuncompress(body)
+            elseif compressed == "deflate" then
+              body = uncompress(body)
+            end
+          end
+          response = nil
+          return { headers = headers, body = body }
         end
         response = new_tab(32, 0)
       end
       response[#response+1] = read_data(sock, head)
       if tab.end_stream then
         local body = concat(response)
+        if type(headers) == 'table' then
+          local compressed = headers["content-encoding"] or headers["Content-Encoding"]
+          if compressed == "gzip" then
+            body = gzuncompress(body)
+          elseif compressed == "deflate" then
+            body = uncompress(body)
+          end
+        end
         response = nil
         return { headers = headers, body = body }
       end

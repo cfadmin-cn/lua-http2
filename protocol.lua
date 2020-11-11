@@ -231,7 +231,7 @@ local function read_head(sock)
     return nil, "The peer closed the connection during receiving `head` data."
   end
   local length, t, flags, bit = strunpack(">I3BBI4", head)
-  if head == "HTTP/1.1 " or head == "<!DOCTYPE" or t > #TYPE_TAB then
+  if head == "HTTP/1.1 " or t > #TYPE_TAB then
     return ONLY_HTTP_1_1
   end
   return { length = length, type = t, type_name = TYPE_TAB[t], flags = flags, reserved = bit >> 31, stream_id = bit & 2147483647 }

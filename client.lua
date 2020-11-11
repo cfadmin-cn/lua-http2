@@ -124,7 +124,7 @@ local function handshake(sock, opt)
       return nil, err
     end
     if head.version == 1.1 then
-      return nil, "Server Only Support HTTP Version 1.1 ."
+      return nil, "The server does not support the http2 protocol."
     end
     local tname = TYPE_TAB[head.type]
     if not tname or head.stream_id ~= 0 then

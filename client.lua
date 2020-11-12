@@ -65,6 +65,9 @@ end
 
 -- 分割domain
 local function split_domain(domain)
+  if type(domain) ~= 'string' or domain == '' or #domain < 8 then
+    return nil, "Invalid http[s] domain."
+  end
   local scheme, domain_port = match(domain, "^(http[s]?)://([^/]+)")
   if not scheme or not domain_port then
     return nil, "Invalid `scheme` : http/https."
@@ -374,7 +377,18 @@ function client:connect(opt)
   local sock = tcp:new()
   local ok, err
   if info.scheme == "https" then
+    -- 如果支持SSL, 则会尝试进行ALPN协商
+    if sock.ssl_set_alpn then
+      sock:ssl_set_alpn("h2")
+    end
     ok, err = sock:ssl_connect(info.domain, info.port)
+    if sock.ssl_get_alpn then
+      local alpn = sock:ssl_get_alpn()
+      if ok and (not find(alpn or '', "h2")) then -- 如果协议不支持ALPN
+        sock:close()
+        return nil, "The server not support http2 protocol in tls."
+      end
+    end
   else
     ok, err = sock:connect(info.domain, info.port)
   end

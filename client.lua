@@ -475,17 +475,21 @@ function client:send_request(url, method, headers, body, timeout)
     body = nil
   end
   local info = self.info
-  return send_request(self,
-    self.hpack:encode({
-      [":method"] = method,
-      [":scheme"] = info.scheme,
-      [":authority"] = info.domain,
-      [":path"] = url .. (args or ""),
-    }) .. 
-    self.hpack:encode({
-      ["user-agent"] = ua.get_user_agent(),
-      ["origin"] = info.domain,
-    }) .. self.hpack:encode(headers), body, timeout)
+  local headers = self.hpack:encode(
+  {
+    [":method"] = method,
+    [":scheme"] = info.scheme,
+    [":authority"] = info.domain,
+    [":path"] = url .. (args or ""),
+  }) .. self.hpack:encode(
+  {
+    ["origin"] = info.domain,
+    ["accept"] = "*/*",
+    ["accept-encoding"] = "gzip",
+    ["user-agent"] = ua.get_user_agent(),
+  }) ..
+  self.hpack:encode(headers)
+  return send_request(self, headers, body, timeout)
 end
 
 function client:dispatch_all()

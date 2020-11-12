@@ -57,6 +57,7 @@ local type = type
 local next = next
 local pairs = pairs
 local assert = assert
+local tonumber = tonumber
 local tostring = tostring
 
 local find = string.find
@@ -201,14 +202,15 @@ local function send_request(self, headers, body, timeout)
   waits[tostring(sid)] = ctx
 
   -- 发送请求头部
-  send_headers(sock, nil, sid, headers)
-  
+  send_headers(sock, body and 0x04 or 0x05, sid, headers)
+  -- 发送请求主体
   if body then
     send_data(sock, nil, sid, body)
   end
 
-  if timeout then
-    ctx.timer = ctimeout(function()
+  timeout = tonumber(timeout)
+  if timeout >= 0.1 then
+    ctx.timer = ctimeout(timeout, function()
       local co = ctx.co
       ctx.co = nil
       ctx.timer = nil
@@ -481,7 +483,8 @@ function client:send_request(url, method, headers, body, timeout)
       [":path"] = url .. (args or ""),
     }) .. 
     self.hpack:encode({
-      ["user-agent"] = ua.get_user_agent,
+      ["user-agent"] = ua.get_user_agent(),
+      ["origin"] = info.domain,
     }) .. self.hpack:encode(headers), body, timeout)
 end
 

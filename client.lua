@@ -8,9 +8,18 @@
   2020-11-06
 ]]
 
+local cf = require "cf"
+local cself = cf.self
+local cfork = cf.fork
+local cwait = cf.wait
+local cwakeup = cf.wakeup
+local ctimeout = cf.timeout
+
 local lz = require"lz"
 local uncompress = lz.uncompress
 local gzuncompress = lz.gzuncompress
+
+local ua = require "protocol.http.ua"
 
 local http2 = require "protocol.http2.protocol"
 local TYPE_TAB = http2.TYPE_TAB
@@ -45,9 +54,10 @@ local sys = require "sys"
 local new_tab = sys.new_tab
 
 local type = type
+local next = next
 local pairs = pairs
 local assert = assert
-
+local tostring = tostring
 
 local find = string.find
 local fmt = string.format
@@ -173,6 +183,42 @@ local function handshake(sock, opt)
   settings['head'] = nil
   settings['ack'] = nil
   return settings
+end
+
+local function send_request(self, headers, body, timeout)
+  -- 检查实现是否正确
+  local waits = self.waits
+  if waits[tostring(self.sid)] then
+    return assert(nil, "Invalid request in sid : " .. self.sid)
+  end
+  -- 得到对象熟悉
+  local sid = self.sid
+  self.sid = new_stream_id(sid)
+  local sock = self.sock
+
+  -- 记录当前请求对象
+  local ctx = { co = cself(), timer = nil }
+  waits[tostring(sid)] = ctx
+
+  -- 发送请求头部
+  send_headers(sock, nil, sid, headers)
+  
+  if body then
+    send_data(sock, nil, sid, body)
+  end
+
+  if timeout then
+    ctx.timer = ctimeout(function()
+      local co = ctx.co
+      ctx.co = nil
+      ctx.timer = nil
+      waits[tostring(sid)] = nil
+      return cwakeup(co, nil, "Request was timeout.")
+    end)
+  end
+  
+  -- 当响应返回的时候, 将会被自动唤醒
+  return cwait()
 end
 
 -- local client = { version = "0.1", timeout = 5 }
@@ -367,6 +413,7 @@ function client:ctor(opt)
   self.sock = nil
   self.domain = opt.domain
   self.sid = new_stream_id()
+  self.waits = new_tab(0, 64)
 end
 
 function client:connect(opt)
@@ -385,7 +432,7 @@ function client:connect(opt)
     if sock.ssl_get_alpn then
       local alpn = sock:ssl_get_alpn()
       if ok and (not find(alpn or '', "h2")) then -- 如果协议不支持ALPN
-        sock:close()
+        self:close()
         return nil, "The server not support http2 protocol in tls."
       end
     end
@@ -393,28 +440,63 @@ function client:connect(opt)
     ok, err = sock:connect(info.domain, info.port)
   end
   if not ok then
-    sock:close()
+    self:close()
     return nil, "Connect to Server failed."
   end
   -- 指定握手超时时间
   sock._timeout = self.timeout
   local config, err = handshake(sock, opt or {})
   if not config then
-    sock:close()
+    self:close()
     return nil, err
   end
+  self.info = info
   self.config = config
   self.sock = sock
   self.hpack = hpack:new(config.SETTINGS_MAX_HEADER_LIST_SIZE)
   return ok
 end
 
-function client:send_request(opt)
-  -- body
+function client:send_request(url, method, headers, body, timeout)
+  if type(url) ~= 'string' or url == '' then
+    return nil, "Invalid request url."
+  end
+  if type(method) ~= 'string' or method == '' then
+    return nil, "Invalid request method."
+  end
+  if type(headers) ~= 'table' or not next(headers) then
+    return nil, "Invalid request headers."
+  end
+  local args
+  if method == "GET" and type(body) == 'string' and body ~= '' then
+    args = body
+    body = nil
+  end
+  local info = self.info
+  return send_request(self,
+    self.hpack:encode({
+      [":method"] = method,
+      [":scheme"] = info.scheme,
+      [":authority"] = info.domain,
+      [":path"] = url .. (args or ""),
+    }) .. 
+    self.hpack:encode({
+      ["user-agent"] = ua.get_user_agent,
+    }) .. self.hpack:encode(headers), body, timeout)
 end
 
 function client:dispatch_all()
   -- body
+end
+
+function client:close( ... )
+  if self.sock then
+    self.sock:close()
+    self.sock = nil
+  end
+  if self.hpack then
+    self.hpack = nil
+  end
 end
 
 

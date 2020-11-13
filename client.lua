@@ -106,8 +106,8 @@ local function split_domain(domain)
   return { scheme = scheme, domain = domain, port = port }
 end
 
-local function handshake(sock, opt)
-
+local function handshake(self, opt)
+  local sock = self.sock
   -- SEND MAGIC BYTES
   send_magic(sock)
 
@@ -447,7 +447,7 @@ function client:connect(opt)
   end
   -- 指定握手超时时间
   sock._timeout = self.timeout
-  local config, err = handshake(sock, opt or {})
+  local config, err = handshake(self, opt or {})
   if not config then
     self:close()
     return nil, err

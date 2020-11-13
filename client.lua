@@ -106,8 +106,8 @@ local function split_domain(domain)
   return { scheme = scheme, domain = domain, port = port }
 end
 
-local function handshake(self, opt)
-  local sock = self.sock
+local function handshake(sock, opt)
+
   -- SEND MAGIC BYTES
   send_magic(sock)
 
@@ -180,7 +180,6 @@ local function handshake(self, opt)
     end
   end
 
-  sock._timeout = nil
   settings['head'] = nil
   settings['ack'] = nil
   return settings
@@ -447,11 +446,13 @@ function client:connect(opt)
   end
   -- 指定握手超时时间
   sock._timeout = self.timeout
-  local config, err = handshake(self, opt or {})
+  local config, err = handshake(sock, opt or {})
   if not config then
     self:close()
     return nil, err
   end
+  -- 清除握手超时时间
+  sock._timeout = nil
   self.info = info
   self.config = config
   self.sock = sock
@@ -475,20 +476,21 @@ function client:send_request(url, method, headers, body, timeout)
     body = nil
   end
   local info = self.info
-  local headers = self.hpack:encode(
+  local hpack = self.hpack
+  local headers = hpack:encode(
   {
     [":method"] = method,
     [":scheme"] = info.scheme,
     [":authority"] = info.domain,
     [":path"] = url .. (args or ""),
-  }) .. self.hpack:encode(
+  }) .. hpack:encode(
   {
     ["origin"] = info.domain,
     ["accept"] = "*/*",
     ["accept-encoding"] = "gzip",
     ["user-agent"] = ua.get_user_agent(),
   }) ..
-  self.hpack:encode(headers)
+  hpack:encode(headers)
   return send_request(self, headers, body, timeout)
 end
 

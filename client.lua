@@ -30,6 +30,9 @@ local flag_to_table = http2.flag_to_table
 local read_head = http2.read_head
 local read_data = http2.read_data
 
+local send_ping = http2.send_ping
+local read_ping = http2.read_ping
+
 local send_magic = http2.send_magic
 
 local read_promise = http2.read_promise
@@ -63,6 +66,8 @@ local tostring = tostring
 local find = string.find
 local fmt = string.format
 local match = string.match
+
+local ceil = math.ceil
 local toint = math.tointeger
 local concat = table.concat
 
@@ -146,6 +151,13 @@ local function handshake(sock, opt)
       send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
       return nil, "Invalid `Frame Type` In handshake."
     end
+    if tname == "PING" then
+      local payload = read_ping(sock, head)
+      local tab = flag_to_table(tname, head.flags)
+      if tab.ack ~= true then
+        send_ping(sock, payload)
+      end
+    end
     if tname == "SETTINGS" then
       if head.length == 0 then
         send_settings_ack(sock)
@@ -185,41 +197,84 @@ local function handshake(sock, opt)
   return settings
 end
 
-local function send_request(self, headers, body, timeout)
-  -- 检查实现是否正确
-  local waits = self.waits
-  if waits[tostring(self.sid)] then
-    return assert(nil, "Invalid request in sid : " .. self.sid)
+local function read_response(self, sid, timeout)
+  local sock = self.sock
+  local hpack = self.hpack
+  local headers, body = new_tab(6, 0), new_tab(32, 0)
+  local response = { headers = nil, body = nil }
+  while 1 do
+    local head, err = read_head(sock)
+    if not head then
+      return nil, "Server close this session or reqeust timeout."
+    end
+    local tname = TYPE_TAB[head.type]
+    if tname == "GOAWAY" then
+      local info = read_goaway(sock, head)
+      return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
+    end
+    if tname == "RST_STREAM" then
+      local info = read_rstframe(sock, head)
+      return nil, fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo)
+    end
+    if tname == "PUSH_PROMISE" then
+      local pid, hds = read_promise(sock, head)
+      if pid and hds then
+        -- 拒绝推送流
+        send_rstframe(sock, pid, 0x00)
+        local h = hpack:decode(hds)
+        -- var_dump(h)
+      end
+    end
+    if tname == "HEADERS" then
+      headers[#headers+1] = read_headers(sock, head)
+      local tab = flag_to_table(tname, head.flags)
+      if tab.end_headers then
+        headers = hpack:decode(concat(headers))
+      end
+      if tab.end_stream then
+        return { headers = headers }
+      end
+    end
+    if tname == "PING" then
+      local payload = read_ping(sock, head)
+      local tab = flag_to_table(tname, head.flags)
+      if tab.ack ~= true then
+        send_ping(sock, payload)
+      end
+    end
+    if tname == "DATA" then
+      body[#body+1] = read_data(sock, head)
+      local tab = flag_to_table(tname, head.flags)
+      local compressed = headers["content-encoding"]
+      if tab.end_stream then
+        body = concat(body)
+        if compressed == "gzip" then
+          body = gzuncompress(body)
+        elseif compressed == "deflate" then
+          body = uncompress(body)
+        end
+        return { headers = headers, body = body }
+      end
+    end
   end
-  -- 得到对象熟悉
+end
+
+local function send_request(self, headers, body, timeout)
   local sid = self.sid
   self.sid = new_stream_id(sid)
   local sock = self.sock
-
-  -- 记录当前请求对象
-  local ctx = { co = cself(), timer = nil }
-  waits[tostring(sid)] = ctx
-
   -- 发送请求头部
   send_headers(sock, body and 0x04 or 0x05, sid, headers)
   -- 发送请求主体
   if body then
-    send_data(sock, nil, sid, body)
-  end
+    local max_body_size = 32737
+    if #body > max_body_size then
 
-  timeout = tonumber(timeout)
-  if timeout >= 0.1 then
-    ctx.timer = ctimeout(timeout, function()
-      local co = ctx.co
-      ctx.co = nil
-      ctx.timer = nil
-      waits[tostring(sid)] = nil
-      return cwakeup(co, nil, "Request was timeout.")
-    end)
+    else
+      send_data(sock, nil, sid, body)
+    end
   end
-  
-  -- 当响应返回的时候, 将会被自动唤醒
-  return cwait()
+  return read_response(self, sid)
 end
 
 -- local client = { version = "0.1", timeout = 5 }
@@ -442,7 +497,7 @@ function client:connect(opt)
   end
   if not ok then
     self:close()
-    return nil, "Connect to Server failed."
+    return nil, "Connect to Server failed. "
   end
   -- 指定握手超时时间
   sock._timeout = self.timeout
@@ -460,7 +515,7 @@ function client:connect(opt)
   return ok
 end
 
-function client:send_request(url, method, headers, body, timeout)
+function client:request(url, method, headers, body, timeout)
   if type(url) ~= 'string' or url == '' then
     return nil, "Invalid request url."
   end
@@ -478,24 +533,22 @@ function client:send_request(url, method, headers, body, timeout)
   local info = self.info
   local hpack = self.hpack
   local headers = hpack:encode(
-  {
-    [":method"] = method,
-    [":scheme"] = info.scheme,
-    [":authority"] = info.domain,
-    [":path"] = url .. (args or ""),
-  }) .. hpack:encode(
-  {
-    ["origin"] = info.domain,
-    ["accept"] = "*/*",
-    ["accept-encoding"] = "gzip",
-    ["user-agent"] = ua.get_user_agent(),
-  }) ..
-  hpack:encode(headers)
+    {
+      [":method"] = method,
+      [":scheme"] = info.scheme,
+      [":authority"] = info.domain,
+      [":path"] = url .. (args or ""),
+    }
+  ) .. hpack:encode(
+    {
+      ["origin"] = info.domain,
+      ["accept"] = "*/*",
+      ["accept-encoding"] = "gzip, deflate, identity",
+      ["content-length"] = body and #body or nil,
+      ["user-agent"] = ua.get_user_agent(),
+    }
+  ) .. hpack:encode(headers)
   return send_request(self, headers, body, timeout)
-end
-
-function client:dispatch_all()
-  -- body
 end
 
 function client:close( ... )
@@ -507,6 +560,5 @@ function client:close( ... )
     self.hpack = nil
   end
 end
-
 
 return client

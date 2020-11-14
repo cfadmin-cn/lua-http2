@@ -103,7 +103,7 @@ local FLAGS_TRANSFER_TAB = {
 		}
 	end,
 	[0x06] = function (flags)
-		return empty_table
+		return { ack = flags == 0x01 and true or false }
 	end,
 	[0x07] = function (flags)
 		return empty_table
@@ -192,7 +192,10 @@ Frame Payload : 是帧主体内容由帧类型决定;
 local function sock_read(sock, bytes)
 	local buffers = new_tab(16, 0)
 	while 1 do
-		local buffer = sock:recv(bytes)
+		local buffer, err = sock:recv(bytes)
+    if not buffer then
+      return nil, err
+    end
 		buffers[#buffers+1] = buffer
 		if bytes <= #buffer then
 			break
@@ -271,6 +274,11 @@ local function read_data(sock, head)
 	return sock_read(sock, head.length)
 end
 
+-- 发送DATA包内容
+local function send_data(sock, flags, stream_id, payload)
+  return send_head(sock, #payload, TYPE_TAB["DATA"], flags or 0x01, stream_id) and send_body(sock, payload)
+end
+
 -- 读取HEADERS包内容
 local function read_headers(sock, head)
 	if not head then
@@ -331,7 +339,7 @@ local function send_settings(sock, flags, settings)
     end
     payload = concat(payloads)
   end
-  return send_head(sock, #payload, 0x04, flags or 0x00, 0x00) and send_body(sock, payload)
+  return send_head(sock, #payload, TYPE_TAB["SETTINGS"], flags or 0x00, 0x00) and send_body(sock, payload)
 end
 
 local function send_settings_ack(sock)
@@ -369,7 +377,7 @@ end
 
 -- 发送GOAWAY包
 local function send_goaway(sock, errno)
-  return send_head(sock, 8, 0x07, 0x00, 0x00) and send_body(sock, strpack("<I4I4", tid or 0x00, errno or 0x00))
+  return send_head(sock, 8, 0x07, 0x00, 0x00) and send_body(sock, strpack(">I4I4", 0x00, errno or 0x00))
 end
 
 -- 读取WINDOW_UPDATE包内容
@@ -400,7 +408,7 @@ end
 
 -- 发送WINDOW_UPDATE包
 local function send_window_update(sock, window_size)
-	return send_head(sock, 4, TYPE_TAB.WINDOW_UPDATE, 0x00, 0x00) and send_body(sock, strpack(">I4", window_size or 1 << 24))
+	return send_head(sock, 4, TYPE_TAB["WINDOW_UPDATE"], 0x00, 0x00) and send_body(sock, strpack(">I4", window_size or 1 << 24))
 end
 
 -- 读取RST_STREAM包
@@ -418,6 +426,21 @@ local function read_rstframe(sock, head)
 	return { head = head, errcode = errcode, errinfo = ERRNO_TAB[errcode] }
 end
 
+local function read_ping(sock, head)
+  if not head then
+    local err
+    head, err = read_head(sock)
+    if not head then
+      return nil, err
+    end
+  end
+  assert(head.type == TYPE_TAB.PING, "Invalid `PING` packet.")
+  return sock_read(sock, 8)
+end
+
+local function send_ping(sock, payload)
+  return send_head(sock, #payload, TYPE_TAB["PING"], 0x01, 0) and send_body(payload)
+end
 
 -- 读取promise帧
 local function read_promise(sock, head)
@@ -440,7 +463,7 @@ end
 
 
 local function send_rstframe(sock, stream_id, errno)
-	return send_head(sock, 4, TYPE_TAB.RST_STREAM, 0x00, stream_id) and send_body(sock, strpack(">I4", errno or ERRNO_TAB["NO_ERROR"]))
+	return send_head(sock, 4, TYPE_TAB["RST_STREAM"], 0x00, stream_id) and send_body(sock, strpack(">I4", errno or ERRNO_TAB["NO_ERROR"]))
 end
 
 return {
@@ -455,9 +478,14 @@ return {
 	is_frame = is_frame,
 	flag_to_table = flag_to_table,
 
-	-- 
+	-- 读取协议头部
 	read_head = read_head,
+
+  read_ping = read_ping,
+  send_ping = send_ping,
+
 	read_data = read_data,
+  send_data = send_data,
 
   read_magic = read_magic,
   send_magic = send_magic,

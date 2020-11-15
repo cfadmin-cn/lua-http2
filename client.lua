@@ -184,20 +184,21 @@ local function read_response(self, sid, timeout)
   local waits = self.wait_cos
   if tonumber(timeout) and tonumber(timeout) > 0.1 then
     waits[sid].timer = ctimeout(timeout, function( ... )
+      waits[sid].cancel = true
       cwakeup(waits[sid].co, nil, "request timeout.")
-      waits[sid] = nil
+      self:send(function() return send_rstframe(self.sock, sid, 0x00) end)
     end)
   end
   if not self.read_co then
+    
     local sock = self.sock
-    local head, err
     self.read_co = cfork(function ()
       while 1 do
-        head, err = read_head(sock)
+        local head, err = read_head(sock)
         if not head then
           break
         end
-        local tname = TYPE_TAB[head.type]
+        local tname = head.type_name
         -- 无效的帧类型应该被直接忽略
         if not tname then
           err = "Unexpected frame type received."
@@ -222,8 +223,8 @@ local function read_response(self, sid, timeout)
           local pid, hds = read_promise(sock, head)
           if pid and hds then
             -- 实现虽然拒绝推送流, 但是流推的头部需要被解码
-            send_rstframe(sock, pid, 0x00)
-            local h = hpack:decode(hds)
+            self:send(function() return send_rstframe(sock, pid, 0x00) end)
+            self.hpack:decode(hds)
             -- var_dump(h)
           end
         end
@@ -240,7 +241,7 @@ local function read_response(self, sid, timeout)
         if tname == "SETTINGS" then
           if head.length > 0 then
             local _ = read_settings(sock, head)
-            send_settings_ack(sock)
+            self:send(function() return send_settings_ack(sock) end )
           end
         end
         if tname == "WINDOW_UPDATE" then
@@ -249,39 +250,53 @@ local function read_response(self, sid, timeout)
             err = "Invalid handshake in `WINDOW_UPDATE` frame."
             break
           end
-          send_window_update(sock, window.window_size)
+          self:send(function() return send_window_update(sock, window.window_size) end)
         end
         if tname == "HEADERS" then
+          -- print("HEADERS", head.stream_id)
           local ctx = waits[head.stream_id]
-          if ctx then
-            ctx["headers"][#ctx["headers"]+1] = read_headers(sock, head)
+          local headers = ctx["headers"]
+          -- print(ctx, headers)
+          if ctx and headers then
+            headers[#headers+1] = read_headers(sock, head)
           end
           local tab = flag_to_table(tname, head.flags)
-          -- var_dump(tab)
-          if tab.end_stream and ctx then
-            cwakeup(ctx.co, ctx)
-            local timer = waits[head.stream_id].timer
-            if timer then
-              timer:stop()
+          if tab.end_stream then
+            if #ctx["body"] > 0 then
+              ctx["body"] = concat(ctx["body"])
             end
-            ctx.co = nil
+            ctx["headers"] = self.hpack:decode(concat(headers))
+            if not ctx.cancel then
+              cwakeup(ctx.co, ctx)
+              if ctx.timer then
+                ctx.timer:stop()
+                ctx.timer = nil
+              end
+            end
             waits[head.stream_id] = nil
           end
         end
         if tname == "DATA" then
+          -- print("DATA", head.stream_id)
           local ctx = waits[head.stream_id]
-          if ctx then
-            ctx["body"][#ctx["body"]+1] = read_data(sock, head)
+          local body = ctx["body"]
+          -- print(ctx, body)
+          if ctx and body then
+            body[#body+1] = read_data(sock, head)
           end
           local tab = flag_to_table(tname, head.flags)
-          -- var_dump(tab)
-          if tab.end_stream and ctx then
-            cwakeup(ctx.co, ctx)
-            local timer = waits[head.stream_id].timer
-            if timer then
-              timer:stop()
+          if tab.end_stream then
+            if #ctx["headers"] > 0 then
+              ctx["headers"] = self.hpack:decode(concat(ctx["headers"]))
             end
-            ctx.co = nil
+            if not ctx.cancel then
+              ctx["body"] = concat(body)
+              cwakeup(ctx.co, ctx)
+              if ctx.timer then
+                ctx.timer:stop()
+                ctx.timer = nil
+              end
+            end
             waits[head.stream_id] = nil
           end
         end
@@ -293,8 +308,8 @@ local function read_response(self, sid, timeout)
   if not ctx then
     return ctx, err
   end
-  local headers = self.hpack:decode(concat(ctx.headers))
-  local body = concat(ctx.body)
+  local body = ctx["body"]
+  local headers = ctx["headers"]
   local compressed = headers["content-encoding"]
   if compressed == "gzip" then
     body = gzuncompress(body)

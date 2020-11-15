@@ -28,7 +28,9 @@ local SETTINGS_TAB = http2.SETTINGS_TAB
 local flag_to_table = http2.flag_to_table
 
 local read_head = http2.read_head
+
 local read_data = http2.read_data
+local send_data = http2.send_data
 
 local send_ping = http2.send_ping
 local read_ping = http2.read_ping
@@ -92,17 +94,17 @@ local function split_domain(domain)
   local port = scheme == "https" and 443 or 80
   local domain = domain_port
   if find(domain_port, ':') then
-    local d, p
+    local host, p
     local _, Bracket_Pos = find(domain_port, '[%[%]]')
     if Bracket_Pos then
-      d, p = match(domain_port, '%[(.+)%][:]?(%d*)')
+      host, p = match(domain_port, '%[(.+)%][:]?(%d*)')
     else
-      d, p = match(domain_port, '([^:]+)[:](%d*)')
+      host, p = match(domain_port, '([^:]+)[:](%d*)')
     end
-    if not d then
+    if not host then
       return nil, "4. invalide host or port: " .. domain_port
     end
-    domain = d
+    domain = host
     port = toint(p) or port
   end
 
@@ -134,56 +136,32 @@ local function handshake(sock, opt)
 
   send_window_update(sock, 2 ^ 24 - 1)
 
-  local settings
-
-  while 1 do
+  for i = 1, 2 do
     local head, err = read_head(sock)
     if not head then
-      send_goaway(sock, ERRNO_TAB["SETTINGS_TIMEOUT"])
-      return nil, err
+      return nil, "Handshake timeout."
     end
     if head.version == 1.1 then
-      return nil, "The server does not support the http2 protocol."
+      return nil, "The server does not yet support the http2 protocol."
     end
     local tname = TYPE_TAB[head.type]
-    if not tname or head.stream_id ~= 0 then
-      -- var_dump(head)
-      send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
-      return nil, "Invalid `Frame Type` In handshake."
-    end
-    if tname == "PING" then
-      local payload = read_ping(sock, head)
-      local tab = flag_to_table(tname, head.flags)
-      if tab.ack ~= true then
-        send_ping(sock, payload)
-      end
-    end
     if tname == "SETTINGS" then
-      if head.length == 0 then
-        send_settings_ack(sock)
-        break
-      end
+      if head.length == 0 then break end
       local s, errno = read_settings(sock, head)
       if not s then
         send_goaway(sock, ERRNO_TAB[errno])
         return nil, "recv Invalid `SETTINGS` header."
       end
       settings = s
-    end
-    if tname == "WINDOW_UPDATE" then
+    elseif tname == "WINDOW_UPDATE" then
       local window = read_window_update(sock, head)
-      if type(settings) == 'table' then
-        settings["SETTINGS_INITIAL_WINDOW_SIZE"] = window.window_size
+      if not window then
+        return nil, "Invalid handshake in `WINDOW_UPDATE` frame."
       end
+      settings["SETTINGS_INITIAL_WINDOW_SIZE"] = window.window_size
+    else
+      return nil, "Invalid `frame type` in handshake."
     end
-    if tname == "GOAWAY" then
-      local info = read_goaway(sock, head)
-      return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
-    end
-  end
-
-  if type(settings) ~= 'table' then
-    return nil, "Invalid Handshake"
   end
 
   for key, value in pairs(SETTINGS_TAB) do
@@ -192,71 +170,120 @@ local function handshake(sock, opt)
     end
   end
 
+  if type(settings) ~= 'table' then
+    return nil, "Invalid handshake."
+  end
+
   settings['head'] = nil
   settings['ack'] = nil
   return settings
 end
 
 local function read_response(self, sid, timeout)
-  local sock = self.sock
-  local hpack = self.hpack
-  local headers, body = new_tab(6, 0), new_tab(32, 0)
-  local response = { headers = nil, body = nil }
-  while 1 do
-    local head, err = read_head(sock)
-    if not head then
-      return nil, "Server close this session or reqeust timeout."
-    end
-    local tname = TYPE_TAB[head.type]
-    if tname == "GOAWAY" then
-      local info = read_goaway(sock, head)
-      return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
-    end
-    if tname == "RST_STREAM" then
-      local info = read_rstframe(sock, head)
-      return nil, fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo)
-    end
-    if tname == "PUSH_PROMISE" then
-      local pid, hds = read_promise(sock, head)
-      if pid and hds then
-        -- 拒绝推送流
-        send_rstframe(sock, pid, 0x00)
-        local h = hpack:decode(hds)
-        -- var_dump(h)
-      end
-    end
-    if tname == "HEADERS" then
-      headers[#headers+1] = read_headers(sock, head)
-      local tab = flag_to_table(tname, head.flags)
-      if tab.end_headers then
-        headers = hpack:decode(concat(headers))
-      end
-      if tab.end_stream then
-        return { headers = headers }
-      end
-    end
-    if tname == "PING" then
-      local payload = read_ping(sock, head)
-      local tab = flag_to_table(tname, head.flags)
-      if tab.ack ~= true then
-        send_ping(sock, payload)
-      end
-    end
-    if tname == "DATA" then
-      body[#body+1] = read_data(sock, head)
-      local tab = flag_to_table(tname, head.flags)
-      local compressed = headers["content-encoding"]
-      if tab.end_stream then
-        body = concat(body)
-        if compressed == "gzip" then
-          body = gzuncompress(body)
-        elseif compressed == "deflate" then
-          body = uncompress(body)
-        end
-        return { headers = headers, body = body }
-      end
-    end
+  local waits = self.wait_cos
+  if not waits then
+    waits = {}
   end
+  waits[sid] = {co = cself(), headers = new_tab(3, 0), body = new_tab(32, 0) }
+  if not self.read_co then
+    local sock = self.sock
+    local head, err
+    self.read_co = cfork(function ()
+      while 1 do
+        head, err = read_head(sock)
+        if not head then
+          break
+        end
+        local tname = TYPE_TAB[head.type]
+        -- 无效的帧类型应该被直接忽略
+        if not tname then
+          err = "Unexpected frame type received."
+          break
+        end
+        if tname == "GOAWAY" then
+          local info = read_goaway(sock, head)
+          return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
+        end
+        if tname == "RST_STREAM" then
+          local info = read_rstframe(sock, head)
+          err = fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo)
+          if waits[head.stream_id] then
+            wakeup(waits[head.stream_id].co, nil, "internal server error.")
+            waits[head.stream_id] = nil
+          else
+            break
+          end
+        end
+        -- 应该忽略PUSH_PROMISE帧
+        if tname == "PUSH_PROMISE" then
+          local pid, hds = read_promise(sock, head)
+          if pid and hds then
+            -- 实现虽然拒绝推送流, 但是流推的头部需要被解码
+            send_rstframe(sock, pid, 0x00)
+            local h = hpack:decode(hds)
+            -- var_dump(h)
+          end
+        end
+        if tname == "PING" then
+          local payload = read_ping(sock, head)
+          local tab = flag_to_table(tname, head.flags)
+          if tab.ack ~= true then
+            send_ping(sock, 0x01, payload)
+            -- send_ping(sock, 0x00, payload)
+          end
+        end
+        if tname == "SETTINGS" then
+          if head.length > 0 then
+            local _ = read_settings(sock, head)
+            send_settings_ack(sock)
+          end
+        end
+        if tname == "WINDOW_UPDATE" then
+          local window = read_window_update(sock, head)
+          if not window then
+            err = "Invalid handshake in `WINDOW_UPDATE` frame."
+            break
+          end
+          send_window_update(sock, window.window_size)
+        end
+        if tname == "HEADERS" then
+          local ctx = waits[head.stream_id]
+          ctx["headers"][#ctx["headers"]+1] = read_headers(sock, head)
+          local tab = flag_to_table(tname, head.flags)
+          -- if tab.end_headers then
+          --   headers = hpack:decode(concat(headers))
+          -- end
+          if tab.end_stream then
+            cwakeup(ctx.co, ctx)
+            waits[head.stream_id] = nil
+          end
+        end
+        if tname == "DATA" then
+          local ctx = waits[head.stream_id]
+          ctx["body"][#ctx["body"]+1] = read_data(sock, head)
+          local tab = flag_to_table(tname, head.flags)
+          if tab.end_stream then
+            cwakeup(ctx.co, ctx)
+            waits[head.stream_id] = nil
+          end
+        end
+      end
+    end)
+  end
+  -- 阻塞协程
+  local ctx, err = cwait()
+  if not ctx then
+    return ctx, err
+  end
+  local headers = self.hpack:decode(concat(ctx.headers))
+  local body = concat(ctx.body)
+  local compressed = headers["content-encoding"]
+  if compressed == "gzip" then
+    body = gzuncompress(body)
+  elseif compressed == "deflate" then
+    body = uncompress(body)
+  end
+  return { body = body, headers = headers }
 end
 
 local function send_request(self, headers, body, timeout)
@@ -271,188 +298,11 @@ local function send_request(self, headers, body, timeout)
     if #body > max_body_size then
 
     else
-      send_data(sock, nil, sid, body)
+      send_data(sock, 0x01, sid, body)
     end
   end
   return read_response(self, sid)
 end
-
--- local client = { version = "0.1", timeout = 5 }
-
--- function client.handshake(sock, opt)
-
---   -- 指定握手超时时间
---   sock._timeout = client.timeout
-
---   -- SEND MAGIC BYTES
---   send_magic(sock)
-
---   -- SEND SETTINS
---   send_settings(sock, nil, {
---     -- SET TABLE SISZE
---     -- {0x01, opt.SETTINGS_HEADER_TABLE_SIZE or SETTINGS_TAB["SETTINGS_HEADER_TABLE_SIZE"]},
---     -- DISABLE PUSH
---     {0x02, 0x00 or opt.SETTINGS_ENABLE_PUSH or SETTINGS_TAB["SETTINGS_ENABLE_PUSH"]},
---     -- SET CONCURRENT STREAM
---     {0x03, opt.SETTINGS_MAX_CONCURRENT_STREAMS or SETTINGS_TAB["SETTINGS_MAX_CONCURRENT_STREAMS"]},
---     -- SET WINDOWS SIZE
---     {0x04, opt.SETTINGS_INITIAL_WINDOW_SIZE or SETTINGS_TAB["SETTINGS_INITIAL_WINDOW_SIZE"]},
---     -- SET MAX FRAME SIZE
---     {0x05, opt.SETTINGS_MAX_FRAME_SIZE or SETTINGS_TAB["SETTINGS_MAX_FRAME_SIZE"]},
---     -- SET SETTINGS MAX HEADER LIST SIZE
---     {0x06, opt.SETTINGS_MAX_HEADER_LIST_SIZE or SETTINGS_TAB["SETTINGS_MAX_HEADER_LIST_SIZE"]},
---   })
-
---   send_window_update(sock, 2 ^ 24 - 1)
-
---   local settings
-
---   while 1 do
---     local head, err = read_head(sock)
---     if not head then
---       send_goaway(sock, ERRNO_TAB["SETTINGS_TIMEOUT"])
---       return nil, err
---     end
---     local tname = TYPE_TAB[head.type]
---     if not tname then
---       send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
---       return nil, "Invalid `Frame Type` In handshake."
---     end
---     if tname == "SETTINGS" then
---       if head.length == 0 then
---         send_settings_ack(sock)
---         break
---       end
---       local s, errno = read_settings(sock, head)
---       if not s then
---         send_goaway(sock, ERRNO_TAB[errno])
---         return nil, "recv Invalid `SETTINGS` header."
---       end
---       settings = s
---     end
---     if tname == "WINDOW_UPDATE" then
---       local window = read_window_update(sock, head)
---       if type(settings) == 'table' then
---         settings["SETTINGS_INITIAL_WINDOW_SIZE"] = window.window_size
---       end
---     end
---     if tname == "GOAWAY" then
---       local info = read_goaway(sock, head)
---       return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
---     end
---   end
-
---   if type(settings) ~= 'table' then
---     return nil, "Invalid Handshake"
---   end
-
---   for key, value in pairs(SETTINGS_TAB) do
---     if type(key) == 'string' and not settings[key] then
---       settings[key] = value
---     end
---   end
-
---   sock._timeout = nil
---   settings['head'] = nil
---   settings['ack'] = nil
---   return settings
--- end
-
--- function client.close(sock)
---   return send_goaway(sock, 0x00) and sock:close()
--- end
-
-
--- function client.connect(sock, opt)
---   local ok, err = sock:connect(opt.host, opt.port)
---   if not ok then
---     return nil, err
---   end
---   return client.handshake(sock, opt)
--- end
-
--- function client.send_request(ctx)
---   local sock = ctx.sock
---   local sid = new_stream_id(ctx.sid)
---   send_headers(sock, nil, sid, ctx.headers)
---   return sid
--- end
-
--- function client.dispatch_all(ctx)
---   local headers, body
---   local sock = ctx.sock
---   local hpack = ctx.hpack
---   local waits = ctx.waits
---   local response_headers, response_bodys
---   while 1 do
---     local head, err = read_head(sock)
---     if not head then
---       send_goaway(sock, ERRNO_TAB["SETTINGS_TIMEOUT"])
---       return nil, err
---     end
---     local tname = TYPE_TAB[head.type]
---     if tname == "GOAWAY" then
---       local info = read_goaway(sock, head)
---       error(fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or ''))
---     end
---     if tname == "RST_STREAM" then
---       local info = read_rstframe(sock, head)
---       error(fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo))
---     end
---     if tname == "HEADERS" then
---       local header_bytes, err = read_headers(sock, head)
---       if not header_bytes then
---         return nil, err
---       end
---       headers = ctx.hpack:decode(header_bytes)
---     end
---     if tname == "PUSH_PROMISE" then
---       local pid, hds = read_promise(sock, head)
---       if pid and hds then
---         -- 拒绝推送流
---         send_rstframe(sock, pid, 0x00)
---         local h = hpack:decode(hds)
---         -- var_dump(h)
---       end
---     end
---     if tname == "DATA" then
---       local tab = flag_to_table("DATA", head.flags)
---       if not response then
---         if tab.end_stream then
---           local body = read_data(sock, head)
---           if type(headers) == 'table' then
---             local compressed = headers["content-encoding"] or headers["Content-Encoding"]
---             if compressed == "gzip" then
---               body = gzuncompress(body)
---             elseif compressed == "deflate" then
---               body = uncompress(body)
---             end
---           end
---           response = nil
---           return { headers = headers, body = body }
---         end
---         response = new_tab(32, 0)
---       end
---       response[#response+1] = read_data(sock, head)
---       if tab.end_stream then
---         local body = concat(response)
---         if type(headers) == 'table' then
---           local compressed = headers["content-encoding"] or headers["Content-Encoding"]
---           if compressed == "gzip" then
---             body = gzuncompress(body)
---           elseif compressed == "deflate" then
---             body = uncompress(body)
---           end
---         end
---         response = nil
---         return { headers = headers, body = body }
---       end
---     end
---   end
---   return true
--- end
-
--- return client
 
 local tcp = require "internal.TCP"
 
@@ -549,6 +399,10 @@ function client:request(url, method, headers, body, timeout)
     }
   ) .. hpack:encode(headers)
   return send_request(self, headers, body, timeout)
+end
+
+function client:reconnect()
+  -- body
 end
 
 function client:close( ... )

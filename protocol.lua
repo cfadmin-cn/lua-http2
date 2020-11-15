@@ -438,8 +438,8 @@ local function read_ping(sock, head)
   return sock_read(sock, 8)
 end
 
-local function send_ping(sock, payload)
-  return send_head(sock, #payload, TYPE_TAB["PING"], 0x01, 0) and send_body(payload)
+local function send_ping(sock, flags, payload)
+  return send_head(sock, #payload, TYPE_TAB["PING"], flags, 0) and send_body(sock, payload)
 end
 
 -- 读取promise帧
@@ -457,10 +457,12 @@ local function read_promise(sock, head)
 		return nil, "The peer closed the connection while receiving `PUSH_PROMISE` payload."
 	end
 	local bit = strunpack(">I4", packet)
-	local headers_byte = sock_read(sock, head.length - 4)
+	local headers_byte 
+  if head.length - 4 > 0 then
+    headers_byte = sock_read(sock, head.length - 4)
+  end
 	return bit & 2^31 - 1, headers_byte
 end
-
 
 local function send_rstframe(sock, stream_id, errno)
 	return send_head(sock, 4, TYPE_TAB["RST_STREAM"], 0x00, stream_id) and send_body(sock, strpack(">I4", errno or ERRNO_TAB["NO_ERROR"]))

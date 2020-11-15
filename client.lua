@@ -61,6 +61,7 @@ local new_tab = sys.new_tab
 local type = type
 local next = next
 local pairs = pairs
+local ipairs = ipairs
 local assert = assert
 local tonumber = tonumber
 local tostring = tostring
@@ -146,7 +147,7 @@ local function handshake(sock, opt)
     end
     local tname = TYPE_TAB[head.type]
     if tname == "SETTINGS" then
-      if head.length == 0 then break end
+      if head.length == 0 then send_settings_ack(sock) break end
       local s, errno = read_settings(sock, head)
       if not s then
         send_goaway(sock, ERRNO_TAB[errno])
@@ -181,10 +182,12 @@ end
 
 local function read_response(self, sid, timeout)
   local waits = self.wait_cos
-  if not waits then
-    waits = {}
+  if tonumber(timeout) and tonumber(timeout) > 0.1 then
+    waits[sid].timer = ctimeout(timeout, function( ... )
+      cwakeup(waits[sid].co, nil, "request timeout.")
+      waits[sid] = nil
+    end)
   end
-  waits[sid] = {co = cself(), headers = new_tab(3, 0), body = new_tab(32, 0) }
   if not self.read_co then
     local sock = self.sock
     local head, err
@@ -208,7 +211,7 @@ local function read_response(self, sid, timeout)
           local info = read_rstframe(sock, head)
           err = fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo)
           if waits[head.stream_id] then
-            wakeup(waits[head.stream_id].co, nil, "internal server error.")
+            cwakeup(waits[head.stream_id].co, nil, "internal server error.")
             waits[head.stream_id] = nil
           else
             break
@@ -228,8 +231,10 @@ local function read_response(self, sid, timeout)
           local payload = read_ping(sock, head)
           local tab = flag_to_table(tname, head.flags)
           if tab.ack ~= true then
-            send_ping(sock, 0x01, payload)
-            -- send_ping(sock, 0x00, payload)
+            -- 回应PING
+            self:send(function() return send_ping(sock, 0x01, payload) end)
+            -- 主动PING
+            self:send(function() return send_ping(sock, 0x00, payload) end)
           end
         end
         if tname == "SETTINGS" then
@@ -248,22 +253,35 @@ local function read_response(self, sid, timeout)
         end
         if tname == "HEADERS" then
           local ctx = waits[head.stream_id]
-          ctx["headers"][#ctx["headers"]+1] = read_headers(sock, head)
+          if ctx then
+            ctx["headers"][#ctx["headers"]+1] = read_headers(sock, head)
+          end
           local tab = flag_to_table(tname, head.flags)
-          -- if tab.end_headers then
-          --   headers = hpack:decode(concat(headers))
-          -- end
-          if tab.end_stream then
+          -- var_dump(tab)
+          if tab.end_stream and ctx then
             cwakeup(ctx.co, ctx)
+            local timer = waits[head.stream_id].timer
+            if timer then
+              timer:stop()
+            end
+            ctx.co = nil
             waits[head.stream_id] = nil
           end
         end
         if tname == "DATA" then
           local ctx = waits[head.stream_id]
-          ctx["body"][#ctx["body"]+1] = read_data(sock, head)
+          if ctx then
+            ctx["body"][#ctx["body"]+1] = read_data(sock, head)
+          end
           local tab = flag_to_table(tname, head.flags)
-          if tab.end_stream then
+          -- var_dump(tab)
+          if tab.end_stream and ctx then
             cwakeup(ctx.co, ctx)
+            local timer = waits[head.stream_id].timer
+            if timer then
+              timer:stop()
+            end
+            ctx.co = nil
             waits[head.stream_id] = nil
           end
         end
@@ -290,18 +308,23 @@ local function send_request(self, headers, body, timeout)
   local sid = self.sid
   self.sid = new_stream_id(sid)
   local sock = self.sock
+  if not self.wait_cos then
+    self.wait_cos = {}
+  end
+  self.wait_cos[sid] = { co = cself(), headers = new_tab(3, 0), body = new_tab(32, 0) }
   -- 发送请求头部
-  send_headers(sock, body and 0x04 or 0x05, sid, headers)
+  self:send(function() return send_headers(sock, body and 0x04 or 0x05, sid, headers) end)
+  
   -- 发送请求主体
   if body then
     local max_body_size = 32737
     if #body > max_body_size then
 
     else
-      send_data(sock, 0x01, sid, body)
+      self:send(function() return send_data(sock, 0x01, sid, body) end)
     end
   end
-  return read_response(self, sid)
+  return read_response(self, sid, timeout)
 end
 
 local tcp = require "internal.TCP"
@@ -363,6 +386,22 @@ function client:connect(opt)
   self.sock = sock
   self.hpack = hpack:new(config.SETTINGS_MAX_HEADER_LIST_SIZE)
   return ok
+end
+
+function client:send(f)
+  if not self.queue then
+    self.queue = new_tab(16, 0)
+    cfork(function ( ... )
+      for _, f in ipairs(self.queue) do
+        local ok, err = pcall(f, err)
+        if not ok then
+          print(err)
+        end
+      end
+      self.queue = nil
+    end)
+  end
+  self.queue[#self.queue+1] = f
 end
 
 function client:request(url, method, headers, body, timeout)

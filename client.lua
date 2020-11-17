@@ -210,12 +210,14 @@ local function read_response(self, sid, timeout)
         end
         if tname == "RST_STREAM" then
           local info = read_rstframe(sock, head)
-          err = fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo)
-          if waits[head.stream_id] then
-            cwakeup(waits[head.stream_id].co, nil, "internal server error.")
+          local ctx = waits[head.stream_id]
+          if ctx then
+            cwakeup(ctx.co, nil, fmt("{ errcode = %d, errinfo = '%s'}", info.errcode, info.errinfo))
+            if ctx.timer then
+              ctx.timer:stop()
+              ctx.timer = nil
+            end
             waits[head.stream_id] = nil
-          else
-            break
           end
         end
         -- 应该忽略PUSH_PROMISE帧

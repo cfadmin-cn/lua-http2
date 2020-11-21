@@ -233,7 +233,7 @@ local function read_response(self, sid, timeout)
         if tname == "PING" then
           local payload = read_ping(sock, head)
           local tab = flag_to_table(tname, head.flags)
-          if tab.ack ~= true then
+          if not tab.ack then
             -- 回应PING
             self:send(function() return send_ping(sock, 0x01, payload) end)
             -- 主动PING
@@ -398,6 +398,7 @@ function client:connect(opt)
   end
   -- 清除握手超时时间
   sock._timeout = nil
+  self.connected = true
   self.info = info
   self.config = config
   self.sock = sock
@@ -422,6 +423,9 @@ function client:send(f)
 end
 
 function client:request(url, method, headers, body, timeout)
+  if not self.connected then
+    return nil, "http2 client has not connected to the server."
+  end
   if type(url) ~= 'string' or url == '' then
     return nil, "Invalid request url."
   end
@@ -455,10 +459,6 @@ function client:request(url, method, headers, body, timeout)
     }
   ) .. hpack:encode(headers)
   return send_request(self, headers, body, timeout)
-end
-
-function client:reconnect()
-  -- body
 end
 
 function client:close( ... )

@@ -300,6 +300,21 @@ local function read_response(self, sid, timeout)
           end
         end
       end
+      -- 如果是意外关闭了连接, 则需要框架内部主动回收资源
+      if self.connected then
+        -- 如果有等待的请求则直接唤醒并且提示失败.
+        for sid, ctx in pairs(self.waits) do
+          -- 如果有定时器则需要关闭
+          if ctx.timer then
+            ctx.timer:stop()
+            ctx.timer = nil
+          end
+          cwakeup(ctx.co, nil, "The http2 server unexpectedly closed the network connection.")
+        end
+        self.connected = false
+      end
+      -- 回收资源
+      self:close()
     end)
   end
   -- 阻塞协程
@@ -352,6 +367,7 @@ function client:ctor(opt)
   self.timeout = 10
   self.hpack = nil
   self.sock = nil
+  self.connected = false
   self.domain = opt.domain
   self.sid = new_stream_id()
   self.keepalives = 5
@@ -422,7 +438,7 @@ function client:send(f)
       for _, f in ipairs(self.queue) do
         local ok, err = pcall(f, err)
         if not ok then
-          print(err)
+          break
         end
       end
       self.queue = nil
@@ -433,7 +449,7 @@ end
 
 function client:request(url, method, headers, body, timeout)
   if not self.connected then
-    return nil, "http2 client has not connected to the server."
+    return nil, "http2 client not connected to the server or session was closed."
   end
   if type(url) ~= 'string' or url == '' then
     return nil, "Invalid request url."
@@ -471,13 +487,19 @@ function client:request(url, method, headers, body, timeout)
   return send_request(self, headers, body, timeout)
 end
 
+-- 需要保证多次调用此方法是无害的.
 function client:close( ... )
+  self.connected = false
   if self.sock then
     self.sock:close()
     self.sock = nil
   end
   if self.hpack then
     self.hpack = nil
+  end
+  if self.timer then
+    self.timer:stop()
+    self.timer = nil
   end
 end
 

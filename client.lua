@@ -181,7 +181,7 @@ local function handshake(sock, opt)
 end
 
 local function read_response(self, sid, timeout)
-  local waits = self.wait_cos
+  local waits = self.waits
   if tonumber(timeout) and tonumber(timeout) > 0.1 then
     waits[sid].timer = ctimeout(timeout, function( ... )
       waits[sid].cancel = true
@@ -190,7 +190,6 @@ local function read_response(self, sid, timeout)
     end)
   end
   if not self.read_co then
-    
     local sock = self.sock
     self.read_co = cfork(function ()
       while 1 do
@@ -236,8 +235,6 @@ local function read_response(self, sid, timeout)
           if not tab.ack then
             -- 回应PING
             self:send(function() return send_ping(sock, 0x01, payload) end)
-            -- 主动PING
-            self:send(function() return send_ping(sock, 0x00, payload) end)
           end
         end
         if tname == "SETTINGS" then
@@ -322,21 +319,19 @@ local function read_response(self, sid, timeout)
 end
 
 local function send_request(self, headers, body, timeout)
+  local sock = self.sock
   local sid = self.sid
   self.sid = new_stream_id(sid)
-  local sock = self.sock
-  if not self.wait_cos then
-    self.wait_cos = {}
-  end
-  self.wait_cos[sid] = { co = cself(), headers = new_tab(3, 0), body = new_tab(32, 0) }
+  self.waits[sid] = { co = cself(), headers = new_tab(3, 0), body = new_tab(32, 0) }
   -- 发送请求头部
   self:send(function() return send_headers(sock, body and 0x04 or 0x05, sid, headers) end)
-  
+
   -- 发送请求主体
   if body then
     local max_body_size = 32737
     if #body > max_body_size then
-
+      -- TODO
+      assert(nil, "Prohibit sending http2 payloads that need to be subcontracted.")
     else
       self:send(function() return send_data(sock, 0x01, sid, body) end)
     end
@@ -359,7 +354,12 @@ function client:ctor(opt)
   self.sock = nil
   self.domain = opt.domain
   self.sid = new_stream_id()
+  self.keepalives = 5
   self.waits = new_tab(0, 64)
+end
+
+function client:keepalive(timeout)
+  self.keepalives = toint(timeout) or self.keepalives
 end
 
 function client:connect(opt)
@@ -396,6 +396,15 @@ function client:connect(opt)
     self:close()
     return nil, err
   end
+  -- 需要定期发送ping消息保持连接
+  self.timer = cf.at(self.keepalives, function()
+    if not self.sock then
+      return self.timer and self.timer:stop()
+    end
+    return self:send(function ( ... )
+      return send_ping(self.sock, 0x00, string.rep('\x00', 8))
+    end)
+  end)
   -- 清除握手超时时间
   sock._timeout = nil
   self.connected = true
@@ -432,7 +441,7 @@ function client:request(url, method, headers, body, timeout)
   if type(method) ~= 'string' or method == '' then
     return nil, "Invalid request method."
   end
-  if type(headers) ~= 'table' or not next(headers) then
+  if headers and type(headers) ~= 'table'then
     return nil, "Invalid request headers."
   end
   local args
@@ -452,6 +461,7 @@ function client:request(url, method, headers, body, timeout)
   ) .. hpack:encode(
     {
       ["origin"] = info.domain,
+      ["host"] = info.domain,
       ["accept"] = "*/*",
       ["accept-encoding"] = "gzip, deflate, identity",
       ["content-length"] = body and #body or nil,

@@ -21,39 +21,39 @@ local gzuncompress = lz.gzuncompress
 
 local ua = require "protocol.http.ua"
 
-local http2 = require "protocol.http2.protocol"
-local TYPE_TAB = http2.TYPE_TAB
-local ERRNO_TAB = http2.ERRNO_TAB
-local SETTINGS_TAB = http2.SETTINGS_TAB
-local flag_to_table = http2.flag_to_table
+local protocol = require "protocol.http2.protocol"
+local TYPE_TAB = protocol.TYPE_TAB
+local ERRNO_TAB = protocol.ERRNO_TAB
+local SETTINGS_TAB = protocol.SETTINGS_TAB
+local FLAG_TO_TABLE = protocol.flag_to_table
 
-local read_head = http2.read_head
+local read_head = protocol.read_head
 
-local read_data = http2.read_data
-local send_data = http2.send_data
+local read_data = protocol.read_data
+local send_data = protocol.send_data
 
-local send_ping = http2.send_ping
-local read_ping = http2.read_ping
+local send_ping = protocol.send_ping
+local read_ping = protocol.read_ping
 
-local send_magic = http2.send_magic
+local send_magic = protocol.send_magic
 
-local read_promise = http2.read_promise
+local read_promise = protocol.read_promise
 
-local send_rstframe = http2.send_rstframe
-local read_rstframe = http2.read_rstframe
+local send_rstframe = protocol.send_rstframe
+local read_rstframe = protocol.read_rstframe
 
-local send_settings = http2.send_settings
-local read_settings = http2.read_settings
-local send_settings_ack = http2.send_settings_ack
+local send_settings = protocol.send_settings
+local read_settings = protocol.read_settings
+local send_settings_ack = protocol.send_settings_ack
 
-local send_window_update = http2.send_window_update
-local read_window_update = http2.read_window_update
+local send_window_update = protocol.send_window_update
+local read_window_update = protocol.read_window_update
 
-local read_headers = http2.read_headers
-local send_headers = http2.send_headers
+local read_headers = protocol.read_headers
+local send_headers = protocol.send_headers
 
-local send_goaway = http2.send_goaway
-local read_goaway = http2.read_goaway
+local send_goaway = protocol.send_goaway
+local read_goaway = protocol.read_goaway
 
 local sys = require "sys"
 local new_tab = sys.new_tab
@@ -231,7 +231,7 @@ local function read_response(self, sid, timeout)
         end
         if tname == "PING" then
           local payload = read_ping(sock, head)
-          local tab = flag_to_table(tname, head.flags)
+          local tab = FLAG_TO_TABLE(tname, head.flags)
           if not tab.ack then
             -- 回应PING
             self:send(function() return send_ping(sock, 0x01, payload) end)
@@ -259,7 +259,7 @@ local function read_response(self, sid, timeout)
           if ctx and headers then
             headers[#headers+1] = read_headers(sock, head)
           end
-          local tab = flag_to_table(tname, head.flags)
+          local tab = FLAG_TO_TABLE(tname, head.flags)
           if tab.end_stream then
             if #ctx["body"] > 0 then
               ctx["body"] = concat(ctx["body"])
@@ -283,7 +283,7 @@ local function read_response(self, sid, timeout)
           if ctx and body then
             body[#body+1] = read_data(sock, head)
           end
-          local tab = flag_to_table(tname, head.flags)
+          local tab = FLAG_TO_TABLE(tname, head.flags)
           if tab.end_stream then
             if #ctx["headers"] > 0 then
               ctx["headers"] = self.hpack:decode(concat(ctx["headers"]))

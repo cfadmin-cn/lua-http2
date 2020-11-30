@@ -87,12 +87,12 @@ end
 -- 处理ARGS和BODY
 local function DISPATCH_HEADER_AND_BODY(headers, bodys)
   local req = { headers = headers }
+  local s = find(headers[":path"], '?')
+  if s then
+    req.args = url_decode(sub(headers[":path"], s + 1))
+  end
   if headers[":method"] == "GET" or headers[":method"] == "POST" then
-    local s = find(headers[":path"], '?')
-    if s then
-      req.args = url_decode(sub(headers[":path"], s + 1))
-    end
-    local content_type = match(headers["content-type"], "([^ ;]+)")
+    local content_type = match(headers["content-type"] or '', "([^ ;]+)")
     if content_type == "application/x-www-form-urlencoded" then
       for k, v in pairs(url_decode(bodys) or {}) do
         if not req.args then
@@ -101,26 +101,24 @@ local function DISPATCH_HEADER_AND_BODY(headers, bodys)
         req.args[urldecode(k)] = type(v) == "string" and urldecode(v) or v
       end
     elseif content_type == "application/json" then
-      local body = json_decode(bodys)
-      if type(body) == 'table' then
-        for k, v in pairs(body) do
-          if not req.args then
-            req.args = {}
-          end
-          req.args[k] = v
+      for k, v in pairs(json_decode(bodys) or {}) do
+        if not req.args then
+          req.args = {}
         end
+        req.args[k] = v
       end
     elseif content_type == "application/xml" or content_type == "text/xml" then
-      local body = xmlparse(bodys)
-      if type(body) == 'table' then
-        for k, v in pairs(body) do
-          if not req.args then
-            req.args = {}
-          end
-          req.args[k] = v
+      for k, v in pairs(xmlparse(bodys) or {}) do
+        if not req.args then
+          req.args = {}
         end
+        req.args[k] = v
       end
+    else
+      req.body = bodys
     end
+  elseif headers[":method"] == "DELETE" or headers[":method"] == "PUT" then
+  elseif headers[":method"] == "HEAD" or headers[":method"] = "OPTIONS" then
   end
   return req
 end

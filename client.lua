@@ -14,6 +14,7 @@ local cfork = cf.fork
 local cwait = cf.wait
 local cwakeup = cf.wakeup
 local ctimeout = cf.timeout
+local cf_sleep = cf.sleep
 
 local lz = require"lz"
 local uncompress = lz.uncompress
@@ -21,7 +22,7 @@ local gzuncompress = lz.gzuncompress
 
 local ua = require "protocol.http.ua"
 
-local protocol = require "protocol.http2.protocol"
+local protocol = require "lua-http2.protocol"
 local TYPE_TAB = protocol.TYPE_TAB
 local ERRNO_TAB = protocol.ERRNO_TAB
 local SETTINGS_TAB = protocol.SETTINGS_TAB
@@ -59,20 +60,21 @@ local sys = require "sys"
 local new_tab = sys.new_tab
 
 local type = type
-local next = next
 local pairs = pairs
 local ipairs = ipairs
 local assert = assert
 local tonumber = tonumber
-local tostring = tostring
+
+local os_time = os.time
 
 local find = string.find
 local fmt = string.format
 local match = string.match
 
-local ceil = math.ceil
 local toint = math.tointeger
 local concat = table.concat
+
+local methods = { GET = true, POST = true}
 
 -- 必须遵守此stream id递增规则
 local function new_stream_id(num)
@@ -114,7 +116,7 @@ local function split_domain(domain)
   return { scheme = scheme, domain = domain, port = port }
 end
 
-local function handshake(sock, opt)
+local function h2_handshake(sock, opt)
 
   -- SEND MAGIC BYTES
   send_magic(sock)
@@ -137,8 +139,10 @@ local function handshake(sock, opt)
 
   send_window_update(sock, 2 ^ 24 - 1)
 
+  local settings = {}
+
   for i = 1, 2 do
-    local head, err = read_head(sock)
+    local head = read_head(sock)
     if not head then
       return nil, "Handshake timeout."
     end
@@ -177,23 +181,25 @@ local function handshake(sock, opt)
 
   settings['head'] = nil
   settings['ack'] = nil
+
   return settings
 end
 
 local function read_response(self, sid, timeout)
   local waits = self.waits
   if tonumber(timeout) and tonumber(timeout) > 0.1 then
-    waits[sid].timer = ctimeout(timeout, function( ... )
+    waits[sid].timer = ctimeout(timeout, function( )
       waits[sid].cancel = true
       cwakeup(waits[sid].co, nil, "request timeout.")
       self:send(function() return send_rstframe(self.sock, sid, 0x00) end)
     end)
   end
   if not self.read_co then
+    local head, err
     local sock = self.sock
     self.read_co = cfork(function ()
       while 1 do
-        local head, err = read_head(sock)
+        head, err = read_head(sock)
         if not head then
           break
         end
@@ -205,7 +211,8 @@ local function read_response(self, sid, timeout)
         end
         if tname == "GOAWAY" then
           local info = read_goaway(sock, head)
-          return nil, fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
+          err = fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
+          break
         end
         if tname == "RST_STREAM" then
           local info = read_rstframe(sock, head)
@@ -225,7 +232,11 @@ local function read_response(self, sid, timeout)
           if pid and hds then
             -- 实现虽然拒绝推送流, 但是流推的头部需要被解码
             self:send(function() return send_rstframe(sock, pid, 0x00) end)
-            self.hpack:decode(hds)
+            local ok, errinfo = self.hpack:decode(hds)
+            if not ok then
+              err = errinfo
+              break
+            end
             -- var_dump(h)
           end
         end
@@ -264,7 +275,12 @@ local function read_response(self, sid, timeout)
             if #ctx["body"] > 0 then
               ctx["body"] = concat(ctx["body"])
             end
-            ctx["headers"] = self.hpack:decode(concat(headers))
+            local h, errinfo = self.hpack:decode(concat(headers))
+            if not h then
+              err = errinfo
+              break
+            end
+            ctx["headers"] = h
             if not ctx.cancel then
               cwakeup(ctx.co, ctx)
               if ctx.timer then
@@ -286,7 +302,12 @@ local function read_response(self, sid, timeout)
           local tab = FLAG_TO_TABLE(tname, head.flags)
           if tab.end_stream then
             if #ctx["headers"] > 0 then
-              ctx["headers"] = self.hpack:decode(concat(ctx["headers"]))
+              local h, errinfo = self.hpack:decode(concat(ctx["headers"]))
+              if not h then
+                err = errinfo
+                break
+              end
+              ctx["headers"] = h
             end
             if not ctx.cancel then
               ctx["body"] = concat(body)
@@ -303,13 +324,13 @@ local function read_response(self, sid, timeout)
       -- 如果是意外关闭了连接, 则需要框架内部主动回收资源
       if self.connected then
         -- 如果有等待的请求则直接唤醒并且提示失败.
-        for sid, ctx in pairs(self.waits) do
+        for _, ctx in pairs(self.waits) do
           -- 如果有定时器则需要关闭
           if ctx.timer then
             ctx.timer:stop()
             ctx.timer = nil
           end
-          cwakeup(ctx.co, nil, "The http2 server unexpectedly closed the network connection.")
+          cwakeup(ctx.co, nil, err or "The http2 server unexpectedly closed the network connection.")
         end
         self.connected = false
       end
@@ -370,36 +391,38 @@ function client:ctor(opt)
   self.connected = false
   self.domain = opt.domain
   self.sid = new_stream_id()
-  self.keepalives = 5
+  -- self.keepalives = 120
   self.waits = new_tab(0, 64)
 end
 
-function client:keepalive(timeout)
-  self.keepalives = toint(timeout) or self.keepalives
-end
+-- function client:keepalive(timeout)
+--   self.keepalives = toint(timeout) and toint(timeout) > 120 and toint(timeout) or 120
+-- end
 
 function client:connect(opt)
-  local info, err = split_domain(self.domain)
-  if not info then
-    return nil, err
+  if not self.info then
+    local info, err = split_domain(self.domain)
+    if not info then
+      return nil, err
+    end
+    self.info = info
   end
   local sock = tcp:new()
-  local ok, err
-  if info.scheme == "https" then
-    -- 如果支持SSL, 则会尝试进行ALPN协商
-    if sock.ssl_set_alpn then
-      sock:ssl_set_alpn("h2")
+  local ok = sock:connect(self.info.domain, self.info.port)
+  if not ok then
+    self:close()
+    return nil, "Connect to Server failed. "
+  end
+  if self.info.scheme == "https" then
+    sock:ssl_set_alpn('h2')
+    if not sock:ssl_handshake(self.info.domain) then
+      self:close()
+      return nil, "The server not support tls."
     end
-    ok, err = sock:ssl_connect(info.domain, info.port)
-    if sock.ssl_get_alpn then
-      local alpn = sock:ssl_get_alpn()
-      if ok and (not find(alpn or '', "h2")) then -- 如果协议不支持ALPN
-        self:close()
-        return nil, "The server not support http2 protocol in tls."
-      end
+    if sock:ssl_get_alpn() ~= 'h2' then
+      self:close()
+      return nil, "The server not support http2 protocol in tls."
     end
-  else
-    ok, err = sock:connect(info.domain, info.port)
   end
   if not ok then
     self:close()
@@ -407,39 +430,43 @@ function client:connect(opt)
   end
   -- 指定握手超时时间
   sock._timeout = self.timeout
-  local config, err = handshake(sock, opt or {})
+  local config, err = h2_handshake(sock, opt or {})
   if not config then
     self:close()
     return nil, err
   end
   -- 需要定期发送ping消息保持连接
-  self.timer = cf.at(self.keepalives, function()
-    if not self.sock then
-      return self.timer and self.timer:stop()
-    end
-    return self:send(function ( ... )
-      return send_ping(self.sock, 0x00, string.rep('\x00', 8))
-    end)
-  end)
+  -- self.keeper = cf.at(self.keepalives, function()
+  --   if not self.connected then
+  --     return
+  --   end
+  --   return self:send(function ( )
+  --     if not send_ping(self.sock, 0x00, string.rep('\x00', 8)) then
+  --       self:close()
+  --       return false
+  --     end
+  --     return true
+  --   end)
+  -- end)
   -- 清除握手超时时间
   sock._timeout = nil
   self.connected = true
-  self.info = info
   self.config = config
   self.sock = sock
   self.hpack = hpack:new(config.SETTINGS_MAX_HEADER_LIST_SIZE)
-  return ok
+  return self
 end
 
 function client:send(f)
   if not self.queue then
     self.queue = new_tab(16, 0)
-    cfork(function ( ... )
-      for _, f in ipairs(self.queue) do
-        local ok, err = pcall(f, err)
+    cfork(function ( )
+      for _, func in ipairs(self.queue) do
+        local ok = pcall(func)
         if not ok then
           break
         end
+        self.lasttime = os_time()
       end
       self.queue = nil
     end)
@@ -454,10 +481,10 @@ function client:request(url, method, headers, body, timeout)
   if type(url) ~= 'string' or url == '' then
     return nil, "Invalid request url."
   end
-  if type(method) ~= 'string' or method == '' then
+  if type(method) ~= 'string' or method == '' or not methods[method:upper()] then
     return nil, "Invalid request method."
   end
-  if headers and type(headers) ~= 'table'then
+  if type(headers) ~= 'table' then
     return nil, "Invalid request headers."
   end
   local args
@@ -469,7 +496,7 @@ function client:request(url, method, headers, body, timeout)
   local hpack = self.hpack
   local headers = hpack:encode(
     {
-      [":method"] = method,
+      [":method"] = method:upper(),
       [":scheme"] = info.scheme,
       [":authority"] = info.domain,
       [":path"] = url .. (args or ""),
@@ -483,23 +510,27 @@ function client:request(url, method, headers, body, timeout)
       ["content-length"] = body and #body or nil,
       ["user-agent"] = ua.get_user_agent(),
     }
-  ) .. hpack:encode(headers)
+  ) .. hpack:encode(headers or {})
   return send_request(self, headers, body, timeout)
 end
 
 -- 需要保证多次调用此方法是无害的.
-function client:close( ... )
+function client:close( )
   self.connected = false
-  if self.sock then
-    self.sock:close()
-    self.sock = nil
-  end
   if self.hpack then
     self.hpack = nil
   end
   if self.timer then
     self.timer:stop()
     self.timer = nil
+  end
+  -- if self.keeper then
+  --   self.keeper:stop()
+  --   self.keeper = nil
+  -- end
+  if self.sock then
+    self.sock:close()
+    self.sock = nil
   end
 end
 

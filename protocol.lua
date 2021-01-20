@@ -22,7 +22,6 @@
 
 local sys = require "sys"
 local new_tab = sys.new_tab
-local now = sys.now
 
 local type = type
 
@@ -30,8 +29,6 @@ local ipairs = ipairs
 local assert = assert
 
 local concat = table.concat
-
-local random = math.random
 
 local strpack = string.pack
 local strunpack = string.unpack
@@ -406,7 +403,7 @@ end
 
 -- 发送WINDOW_UPDATE包
 local function send_window_update(sock, window_size)
-	return send_head(sock, 4, TYPE_TAB["WINDOW_UPDATE"], 0x00, 0x00) and send_body(sock, strpack(">I4", window_size or 1 << 24))
+	return send_head(sock, 4, TYPE_TAB["WINDOW_UPDATE"], 0x00, 0x00) and send_body(sock, strpack(">I4", window_size or (1 << 24)))
 end
 
 -- 读取RST_STREAM包

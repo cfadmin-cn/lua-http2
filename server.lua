@@ -118,7 +118,7 @@ local function DISPATCH_HEADER_AND_BODY(headers, bodys)
       req.body = bodys
     end
   elseif headers[":method"] == "DELETE" or headers[":method"] == "PUT" then
-  elseif headers[":method"] == "HEAD" or headers[":method"] = "OPTIONS" then
+  elseif headers[":method"] == "HEAD" or headers[":method"] == "OPTIONS" then
   end
   return req
 end

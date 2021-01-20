@@ -17,18 +17,7 @@ if not opt then
   return print(opt, err)
 end
 
-require "cf".fork(function ( ... )
-  local response, err = h2:request("/", "GET", {
-    ["te"] = "trailers",
-    ["content-type"] = "application/grpc",
-    ["grpc-accept-encoding"] = "gzip, identity"
-  }, body, 0.2)
-
-  if not response then
-    return print(err)
-  end
-  var_dump(response)
-end)
+local body
 
 require "cf".fork(function ( ... )
   local response, err = h2:request("/", "GET", {
@@ -43,7 +32,20 @@ require "cf".fork(function ( ... )
   var_dump(response)
 end)
 
-require "cf".fork(function ( ... )
+cf.fork(function ( ... )
+  local response, err = h2:request("/", "GET", {
+    ["te"] = "trailers",
+    ["content-type"] = "application/grpc",
+    ["grpc-accept-encoding"] = "gzip, identity"
+  }, body, 0.2)
+
+  if not response then
+    return print(err)
+  end
+  var_dump(response)
+end)
+
+cf.fork(function ( ... )
   local response, err = h2:request("/", "GET", {
     ["te"] = "trailers",
     ["content-type"] = "application/grpc",

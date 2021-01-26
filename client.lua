@@ -350,6 +350,10 @@ local function read_response(self, sid, timeout)
     body = gzuncompress(body)
   elseif compressed == "deflate" then
     body = uncompress(body)
+  else
+    if type(body) == 'table' then
+      body = concat(body)
+    end
   end
   return { body = body, headers = headers }
 end

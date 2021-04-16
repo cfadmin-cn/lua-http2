@@ -204,13 +204,13 @@ local function sock_write(sock, data)
 end
 
 -- 判断帧类型
-local function is_frame(frame_name, fcode)
-	return frame_name == TYPE_TAB[fcode]
+local function is_frame(fname, fcode)
+	return fname == TYPE_TAB[fcode]
 end
 
 -- 帧标志位转换为table
-local function flag_to_table(frame_name, flags)
-	local fcode = TYPE_TAB[frame_name]
+local function flag_to_table(fname, flags)
+	local fcode = TYPE_TAB[fname]
 	if not fcode then
 		return
 	end
@@ -265,7 +265,7 @@ local function read_data(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.DATA, "Invalid `data` packet.")
+	assert(head.type == TYPE_TAB["DATA"], "Invalid `data` packet.")
 	return sock_read(sock, head.length)
 end
 
@@ -283,8 +283,13 @@ local function read_headers(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.HEADERS, "Invalid `headers` packet.")
-	return sock_read(sock, head.length)
+	assert(head.type == TYPE_TAB["HEADERS"], "Invalid `headers` packet.")
+	local len = 0
+	if flag_to_table(head.type_name, head.flags).prioroty then
+		len = 5
+		sock_read(sock, len)
+	end
+	return sock_read(sock, head.length -)
 end
 
 -- 发送HEADERS包
@@ -301,7 +306,7 @@ local function read_settings(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.SETTINGS, "Invalid `settings` packet.")
+	assert(head.type == TYPE_TAB["SETTINGS"], "Invalid `settings` packet.")
 	if head.flags == 0x01 and head.length ~= 0 then -- 规范强制要求
 		return nil, ERRNO_TAB[ERRNO_TAB["FRAME_SIZE_ERROR"]]
 	end
@@ -350,7 +355,7 @@ local function read_goaway(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.GOAWAY, "Invalid `goaway` packet.")
+	assert(head.type == TYPE_TAB["GOAWAY"], "Invalid `goaway` packet.")
 	local packet = sock_read(sock, 8)
 	if not packet then
 		return nil, "The peer closed the connection while receiving `goaway` payload."
@@ -370,12 +375,12 @@ local function read_goaway(sock, head)
 	}
 end
 
--- 发送GOAWAY包
+-- 发送`GOAWAY`包
 local function send_goaway(sock, errno)
   return send_head(sock, 8, 0x07, 0x00, 0x00) and send_body(sock, strpack(">I4I4", 0x00, errno or 0x00))
 end
 
--- 读取WINDOW_UPDATE包内容
+-- 读取`WINDOW_UPDATE`包
 local function read_window_update(sock, head)
 	if not head then
 		local err
@@ -384,7 +389,7 @@ local function read_window_update(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.WINDOW_UPDATE, "Invalid `window_update` packet.")
+	assert(head.type == TYPE_TAB["WINDOW_UPDATE"], "Invalid `window_update` packet.")
 	local len = head.length
 	if not len or len ~= 4 then
 		return {}
@@ -401,7 +406,7 @@ local function read_window_update(sock, head)
 	}
 end
 
--- 发送WINDOW_UPDATE包
+-- 发送`WINDOW_UPDATE`包
 local function send_window_update(sock, window_size)
 	return send_head(sock, 4, TYPE_TAB["WINDOW_UPDATE"], 0x00, 0x00) and send_body(sock, strpack(">I4", window_size or (1 << 24)))
 end
@@ -415,10 +420,15 @@ local function read_rstframe(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.RST_STREAM, "Invalid `RST_STREAM` packet.")
+	assert(head.type == TYPE_TAB["RST_STREAM"], "Invalid `RST_STREAM` packet.")
 	local packet = sock_read(sock, head.length)
 	local errcode = strunpack(">I4", packet)
 	return { head = head, errcode = errcode, errinfo = ERRNO_TAB[errcode] }
+end
+
+-- 发送`RST_STREAM`包
+local function send_rstframe(sock, stream_id, errno)
+	return send_head(sock, 4, TYPE_TAB["RST_STREAM"], 0x00, stream_id) and send_body(sock, strpack(">I4", errno or ERRNO_TAB["NO_ERROR"]))
 end
 
 local function read_ping(sock, head)
@@ -429,7 +439,7 @@ local function read_ping(sock, head)
       return nil, err
     end
   end
-  assert(head.type == TYPE_TAB.PING, "Invalid `PING` packet.")
+  assert(head.type == TYPE_TAB["PING"], "Invalid `PING` packet.")
   return sock_read(sock, 8)
 end
 
@@ -437,7 +447,7 @@ local function send_ping(sock, flags, payload)
   return send_head(sock, #payload, TYPE_TAB["PING"], flags, 0) and send_body(sock, payload)
 end
 
--- 读取promise帧
+-- 读取`PROMISE`帧
 local function read_promise(sock, head)
 	if not head then
 		local err
@@ -446,21 +456,37 @@ local function read_promise(sock, head)
 			return nil, err
 		end
 	end
-	assert(head.type == TYPE_TAB.PUSH_PROMISE, "Invalid `PUSH_PROMISE` packet.")
+	assert(head.type == TYPE_TAB["PUSH_PROMISE"], "Invalid `PUSH_PROMISE` packet.")
 	local packet = sock_read(sock, 4)
 	if not packet then
 		return nil, "The peer closed the connection while receiving `PUSH_PROMISE` payload."
 	end
 	local bit = strunpack(">I4", packet)
-	local headers_byte 
+	local headers_byte
   if head.length - 4 > 0 then
     headers_byte = sock_read(sock, head.length - 4)
   end
 	return bit & 2^31 - 1, headers_byte
 end
 
-local function send_rstframe(sock, stream_id, errno)
-	return send_head(sock, 4, TYPE_TAB["RST_STREAM"], 0x00, stream_id) and send_body(sock, strpack(">I4", errno or ERRNO_TAB["NO_ERROR"]))
+-- 读取`PRIORITY`帧
+local function read_priority(sock, head)
+	if not head then
+		local err
+		head, err = read_head(sock)
+		if not head then
+			return nil, err
+		end
+	end
+	assert(head.type == TYPE_TAB["PRIORITY"], "Invalid `PRIORITY` packet.")
+	if not sock_read(sock, 4) then
+		return nil, "The peer closed the connection while receiving `PRIORITY` payload. 1"
+	end
+	local pack = sock_read(sock, 1)
+	if not pack then
+		return nil, "The peer closed the connection while receiving `PRIORITY` payload. 2"
+	end
+	return { stream_id = head.stream_id, weight = strunpack("B", pack) + 1}
 end
 
 return {
@@ -490,12 +516,14 @@ return {
 	read_window_update = read_window_update,
 	send_window_update = send_window_update,
 
+	read_priority = read_priority,
+
 	read_promise = read_promise,
 
   read_settings = read_settings,
 	send_settings = send_settings,
 	send_settings_ack = send_settings_ack,
-	
+
 	send_headers = send_headers,
 	read_headers = read_headers,
 

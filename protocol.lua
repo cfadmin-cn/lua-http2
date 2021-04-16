@@ -106,7 +106,7 @@ local FLAGS_TRANSFER_TAB = {
 		return empty_table -- All reserved
 	end,
 	[0x09] = function (flags)
-		return empty_table
+		return { end_headers = flags & 0x04 == 0x04 or false }
 	end,
 }
 
@@ -289,7 +289,7 @@ local function read_headers(sock, head)
 		len = 5
 		sock_read(sock, len)
 	end
-	return sock_read(sock, head.length -)
+	return sock_read(sock, head.length - len)
 end
 
 -- 发送HEADERS包
@@ -489,6 +489,18 @@ local function read_priority(sock, head)
 	return { stream_id = head.stream_id, weight = strunpack("B", pack) + 1}
 end
 
+local function read_continuation (sock, head)
+	if not head then
+		local err
+		head, err = read_head(sock)
+		if not head then
+			return nil, err
+		end
+	end
+	assert(head.type == TYPE_TAB["CONTINUATION"], "Invalid `CONTINUATION` packet.")
+	return sock_read(sock, head.length)
+end
+
 return {
 	version = "0.1",
 	-- 标准编码表
@@ -519,6 +531,8 @@ return {
 	read_priority = read_priority,
 
 	read_promise = read_promise,
+
+	read_continuation = read_continuation,
 
   read_settings = read_settings,
 	send_settings = send_settings,

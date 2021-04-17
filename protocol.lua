@@ -285,6 +285,7 @@ local function read_headers(sock, head)
 	end
 	assert(head.type == TYPE_TAB["HEADERS"], "Invalid `headers` packet.")
 	local len = 0
+	-- 需要忽略`PRIORITY`包携带的特殊数据.
 	if flag_to_table(head.type_name, head.flags).prioroty then
 		len = 5
 		sock_read(sock, len)

@@ -163,48 +163,46 @@ end
 
 
 local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
-  local s = now()
+  local s, ipaddr = now(), opt.ipaddr
   local routes, foldor = self.routes, self.foldor
   local path = urldecode(req['headers'][':path'] or '')
   path = gsub(sub(path, 1, (find(path, "?") or 0) - 1), '(/[/]+)', '/')
   -- 确认路由是否存在
   local cb = routes[path]
   if not cb then
-    -- 是否需要检查静态文件
+    -- 是否继续检查静态文件路由
     if not foldor then
-      self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-      error_response(sock, h2pack, stream_id, 404, {}, nil)
-    else
-      -- 检查静态文件
-      if check_path(path) then
-        self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-        error_response(sock, h2pack, stream_id, 404, {}, nil)
-      else
-        local filepath = foldor .. path
-        local stat = aio_stat(filepath)
-        -- 检查是否合法
-        if type(stat) ~= 'table' or stat.mode ~= 'file' then
-          self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-          error_response(sock, h2pack, stream_id, 404, {}, nil)
-        else
-          local f = io.open(filepath, 'rb')
-          local body = f:read '*a'
-          f:close()
-          self:tolog(200, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-          normal_response(sock, h2pack, stream_id, 200, { ['content-disposition'] = 'attachment', ['content-type'] = 'application/octet-stream' }, body)
-        end
-      end
+      self:tolog(404, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+      return error_response(sock, h2pack, stream_id, 404, {}, nil)
     end
-  else
-    local ok, info = pcall(cb, tab_copy(req), resp)
-    if not ok then
-      self:tolog(500, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-      error_response(sock, h2pack, stream_id, 500, resp.headers, info)
-    else
-      self:tolog(200, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-      normal_response(sock, h2pack, stream_id, toint(resp.code) or 200, resp.headers, resp.body)
+    -- 检查静态文件路径是否合法
+    if check_path(path) then
+      self:tolog(404, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+      return error_response(sock, h2pack, stream_id, 404, {}, nil)
     end
+    local filepath = foldor .. path
+    local stat = aio_stat(filepath)
+    -- 检查是否为合法的`文件`类型
+    if type(stat) ~= 'table' or stat.mode ~= 'file' then
+      self:tolog(404, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+      return error_response(sock, h2pack, stream_id, 404, {}, nil)
+    end
+    local f, errinfo = io.open(filepath, 'rb')
+    if not f then
+      self:tolog(500, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+      return error_response(sock, h2pack, stream_id, 500, {}, errinfo)
+    end
+    self:tolog(200, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+    return normal_response(sock, h2pack, stream_id, 200, { ['content-disposition'] = 'attachment', ['content-type'] = 'application/octet-stream' }, f:read '*a'), f:close()
   end
+  -- 开始处理注册`路由`
+  local ok, info = pcall(cb, tab_copy(req), resp)
+  if not ok then
+    self:tolog(500, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+    return error_response(sock, h2pack, stream_id, 500, resp.headers, info)
+  end
+  self:tolog(200, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
+  return normal_response(sock, h2pack, stream_id, toint(resp.code) or 200, resp.headers, resp.body)
 end
 
 local function url_decode(body)
@@ -348,10 +346,7 @@ local function DISPATCH(self, sock, opt)
         -- print(crypt.hexencode(concat(ctx.headers)))
         local headers = h2pack:decode(concat(ctx.headers))
         if headers then
-          local req = request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil)
-          -- var_dump(req)
-          local resp = {}
-          h2_response(self, sock, stream_id, h2pack, opt, req, resp)
+          h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), {})
         end
       end
     end
@@ -400,9 +395,9 @@ function server:ctor(opt)
   self.routes = {}
 end
 
----@comment Httpd2 路由方法注册
----@param prefix   string   @路由地址
----@param func function     @路由回调函数, 函数签名为: `function(req, resp)`, `req`是请求上下文, `resp`是响应上下文.
+---@comment `Httpd2`路由方法注册
+---@param prefix string    @路由地址
+---@param func   function  @路由回调函数, 函数签名为: `function(req, resp)`, `req`是请求上下文, `resp`是响应上下文.
 function server:route(prefix, func)
   assert(prefix:byte(1) == 47 and not find(prefix, "[ ]"), "[HTTPD2 ERROR] : Prefixes must begin with '/' and Spaces must not be allowed.")
   assert(not self.routes[prefix], "[HTTPD2 ERROR] : The registered routing method - `" .. tostring(prefix) .. "`.")

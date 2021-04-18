@@ -161,6 +161,52 @@ local function normal_response(sock, h2pack, sid, code, headers, body)
   )
 end
 
+
+local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
+  local s = now()
+  local routes, foldor = self.routes, self.foldor
+  local path = urldecode(req['headers'][':path'] or '')
+  path = gsub(sub(path, 1, (find(path, "?") or 0) - 1), '(/[/]+)', '/')
+  -- 确认路由是否存在
+  local cb = routes[path]
+  if not cb then
+    -- 是否需要检查静态文件
+    if not foldor then
+      self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
+      error_response(sock, h2pack, stream_id, 404, {}, nil)
+    else
+      -- 检查静态文件
+      if check_path(path) then
+        self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
+        error_response(sock, h2pack, stream_id, 404, {}, nil)
+      else
+        local filepath = foldor .. path
+        local stat = aio_stat(filepath)
+        -- 检查是否合法
+        if type(stat) ~= 'table' or stat.mode ~= 'file' then
+          self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
+          error_response(sock, h2pack, stream_id, 404, {}, nil)
+        else
+          local f = io.open(filepath, 'rb')
+          local body = f:read '*a'
+          f:close()
+          self:tolog(200, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
+          normal_response(sock, h2pack, stream_id, 200, { ['content-disposition'] = 'attachment', ['content-type'] = 'application/octet-stream' }, body)
+        end
+      end
+    end
+  else
+    local ok, info = pcall(cb, tab_copy(req), resp)
+    if not ok then
+      self:tolog(500, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
+      error_response(sock, h2pack, stream_id, 500, resp.headers, info)
+    else
+      self:tolog(200, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
+      normal_response(sock, h2pack, stream_id, toint(resp.code) or 200, resp.headers, resp.body)
+    end
+  end
+end
+
 local function url_decode(body)
   if type(body) ~= 'string' or body == '' then
     return
@@ -222,9 +268,12 @@ end
 
 local function DISPATCH(self, sock, opt)
   local sid = 1
-  local h = hpack:new(8192)
-  local routes, foldor = self.routes, self.foldor
+  local h2pack = hpack:new(8192)
   local requests, priority = {}, {}
+  if opt.req then
+    h2_response(self, sock, sid, h2pack, opt, opt.req, {})
+    opt.req = nil
+  end
   while 1 do
     local head = read_head(sock)
     if not head then
@@ -252,11 +301,16 @@ local function DISPATCH(self, sock, opt)
       -- 需要读取分割帧
       -- var_dump(head); var_dump(FLAG_TO_TABLE(tname, head.flags));
       local info = read_continuation(sock, head)
-      local ctx = requests[head.stream_id]
-      if ctx then
-        -- `CONTINUATION`帧是`headers`的延伸.
-        tinsert(ctx.headers, info)
+      if not info then
+        break
       end
+      local ctx = requests[head.stream_id]
+      if not ctx then
+        send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
+        break
+      end
+      -- `CONTINUATION`帧是`headers`的延伸.
+      tinsert(ctx.headers, info)
     elseif tname == "WINDOW_UPDATE" then
       local window = read_window_update(sock, head)
       if not window then
@@ -292,53 +346,12 @@ local function DISPATCH(self, sock, opt)
         sid = stream_id
         requests[stream_id] = nil
         -- print(crypt.hexencode(concat(ctx.headers)))
-        local headers = h:decode(concat(ctx.headers))
+        local headers = h2pack:decode(concat(ctx.headers))
         if headers then
           local req = request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil)
           -- var_dump(req)
           local resp = {}
-          local path = urldecode(req['headers'][':path'] or '')
-          path = gsub(sub(path, 1, (find(path, "?") or 0) - 1), '(/[/]+)', '/')
-          -- 确认路由是否存在
-          local cb = routes[path]
-          if not cb then
-            -- 是否需要检查静态文件
-            local s = now()
-            if not foldor then
-              self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-              error_response(sock, h, stream_id, 404, {}, nil)
-            else
-              -- 检查静态文件
-              if check_path(path) then
-                self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-                error_response(sock, h, stream_id, 404, {}, nil)
-              else
-                local filepath = foldor .. path
-                local stat = aio_stat(filepath)
-                -- 检查是否合法
-                if type(stat) ~= 'table' or stat.mode ~= 'file' then
-                  self:tolog(404, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-                  error_response(sock, h, stream_id, 404, {}, nil)
-                else
-                  local f = io.open(filepath, 'rb')
-                  local body = f:read '*a'
-                  f:close()
-                  self:tolog(200, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-                  normal_response(sock, h, stream_id, 200, { ['content-disposition'] = 'attachment', ['content-type'] = 'application/octet-stream' }, body)
-                end
-              end
-            end
-          else
-            local s = now()
-            local ok, info = pcall(cb, tab_copy(req), resp)
-            if not ok then
-              self:tolog(500, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-              error_response(sock, h, stream_id, 500, resp.headers, info)
-            else
-              self:tolog(200, req['headers'][':path'], opt.ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or opt.ipaddr, req['headers'][':method'], now() - s)
-              normal_response(sock, h, stream_id, toint(resp.code) or 200, resp.headers, resp.body)
-            end
-          end
+          h2_response(self, sock, stream_id, h2pack, opt, req, resp)
         end
       end
     end
@@ -348,8 +361,9 @@ end
 
 local function RAW_DISPATCH(sock, opt, self)
 
-  local ok, err = read_magic(sock)
-  if not ok then
+  -- 检查握手
+  local req = read_magic(sock)
+  if not req then
     return sock:close()
   end
 
@@ -371,6 +385,9 @@ local function RAW_DISPATCH(sock, opt, self)
   })
   -- 是否必须要发送呢?
   -- send_window_update(sock, 2 ^ 24 - 1)
+  if type(req) == 'table' then
+    opt.req = req
+  end
   return DISPATCH(self, sock, opt)
 end
 
@@ -459,6 +476,11 @@ function server:log(path)
   if type(path) == 'string' and path ~= '' then
     self.logging = log:new({ dump = true, path = path })
   end
+end
+
+---comment 关闭日志记录
+function server:nolog()
+  self.CLOSE_LOG = true
 end
 
 ---comment 此方法应该在配置完成所有`httpd`配置后调用, 此方法之后的代码或将永远不会被执行.

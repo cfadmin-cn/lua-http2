@@ -41,6 +41,12 @@ local ONLY_HTTP_1_1 = { version = 1.1 }
 local MAGIC = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 -- local MAGIC = "\x50\x52\x49\x20\x2a\x20\x48\x54\x54\x50\x2f\x32\x2e\x30\x0d\x0a\x0d\x0a\x53\x4d\x0d\x0a\x0d\x0a"
 
+local Upgrade = "h2c"
+local Connection = "Upgrade, HTTP2-Settings"
+local HTTP2_Settings = "AAMAAABkAARAAAAAAAIAAAAA"
+
+local protocol_switch = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+
 -- HTTP2帧类型对照表
 local TYPE_TAB = {
   [0x00] = "DATA",
@@ -235,8 +241,8 @@ local function read_head(sock)
   return { length = length, type = t, type_name = TYPE_TAB[t], flags = flags, reserved = bit >> 31, stream_id = bit & 2147483647 }
 end
 
-local function send_head(sock, length, type, flags, sid)
-  return sock_write(sock, strpack(">I3BBI4", length, type, flags, sid))
+local function send_head(sock, length, tp, flags, sid)
+  return sock_write(sock, strpack(">I3BBI4", length, tp, flags, sid))
 end
 
 local function send_body(sock, body)
@@ -245,11 +251,40 @@ end
 
 -- 读取magic包
 local function read_magic(sock)
-	local msg = sock_read(sock, #MAGIC)
-	if not msg then
-		return nil, "the session's socket timeout or connection closed."
+	local msg1 = sock_read(sock, #MAGIC)
+	if msg1 == MAGIC then
+		return true
 	end
-	return msg == MAGIC
+	local msg2 = sock:readline("\r\n\r\n")
+	if not msg2 then
+		return false, "the session's socket timeout or connection closed."
+	end
+	local headers = {}
+	local h1_req = msg1 .. msg2
+	for line in string.gmatch(h1_req, "([^\r\n]+)") do
+		for key, value in line:gmatch("([^ :]+)[ ]*:[ ]*(.+)") do
+			if key and value and key ~= '' and value ~= '' then
+				headers[key:lower()] = value
+			end
+		end
+	end
+	-- var_dump(headers)
+	-- 检查是否支持升级协议.
+	if (headers['Upgrade'] ~= Upgrade and headers['upgrade'] ~= Upgrade)
+			or (headers['Connection'] ~= Connection and headers['connection'] ~= Connection)
+			or (headers['HTTP2-Settings'] ~= HTTP2_Settings and headers['http2-settings'] ~= HTTP2_Settings)
+	then
+		return false, "Http Upgrade failed."
+	end
+	headers[':method'], headers[':path'] = h1_req:match("([^ ]+) ([^ ]+) HTTP/1.1")
+	-- var_dump(headers)
+	-- 回应协议升级
+	sock_write(sock, protocol_switch)
+	-- 再次检查是否发送`MAGIC`
+	if sock_read(sock, #MAGIC) ~= MAGIC then
+		return false
+	end
+	return { headers = headers}
 end
 
 local function send_magic(sock)
@@ -315,7 +350,7 @@ local function read_settings(sock, head)
 		return nil, ERRNO_TAB[ERRNO_TAB["PROTOCOL_ERROR"]]
 	end
 	local setings = { head = head, ack = head.flags & 0x01 == 0x01 }
-	for times = 1, head.length // 6, 1 do
+	for _ = 1, head.length // 6, 1 do
 		local packet = sock_read(sock, 6)
 		if not packet then
 			return nil, "The peer closed the connection while receiving `settings` payload."

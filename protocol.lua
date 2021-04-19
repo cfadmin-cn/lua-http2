@@ -1,3 +1,4 @@
+local crypt = require "crypt"
 --[[
 
 参考文档:
@@ -24,7 +25,7 @@ local sys = require "sys"
 local new_tab = sys.new_tab
 
 local type = type
-
+local pcall = pcall
 local ipairs = ipairs
 local assert = assert
 
@@ -37,14 +38,12 @@ local empty_table = {}
 
 local ONLY_HTTP_1_1 = { version = 1.1 }
 
--- HTTP2 MAGIC : 
+-- HTTP2 MAGIC :
 local MAGIC = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 -- local MAGIC = "\x50\x52\x49\x20\x2a\x20\x48\x54\x54\x50\x2f\x32\x2e\x30\x0d\x0a\x0d\x0a\x53\x4d\x0d\x0a\x0d\x0a"
 
 local Upgrade = "h2c"
 local Connection = "Upgrade, HTTP2-Settings"
-local HTTP2_Settings = "AAMAAABkAARAAAAAAAIAAAAA"
-
 local protocol_switch = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
 
 -- HTTP2帧类型对照表
@@ -259,32 +258,41 @@ local function read_magic(sock)
 	if not msg2 then
 		return false, "the session's socket timeout or connection closed."
 	end
-	local headers = {}
-	local h1_req = msg1 .. msg2
-	for line in string.gmatch(h1_req, "([^\r\n]+)") do
+	local h1_req, headers = msg1 .. msg2, {}
+	for line in h1_req:gmatch("([^\r\n]+)") do
 		for key, value in line:gmatch("([^ :]+)[ ]*:[ ]*(.+)") do
 			if key and value and key ~= '' and value ~= '' then
 				headers[key:lower()] = value
 			end
 		end
 	end
-	-- var_dump(headers)
-	-- 检查是否支持升级协议.
-	if (headers['Upgrade'] ~= Upgrade and headers['upgrade'] ~= Upgrade)
-			or (headers['Connection'] ~= Connection and headers['connection'] ~= Connection)
-			or (headers['HTTP2-Settings'] ~= HTTP2_Settings and headers['http2-settings'] ~= HTTP2_Settings)
-	then
+	local ok, payload = pcall(crypt.base64decode, headers['http2-settings'])
+	if not ok then
+		return false, "Http Upgrade failed, need valid `http-settings`."
+	end
+	local settings = { }
+	for pos = 1, #payload, 6 do
+		local k, v = strunpack(">I2I4", payload, pos)
+		local key = SETTINGS_TAB[k]
+		if key then
+			settings[key] = v
+		end
+	end
+	-- var_dump(settings)
+	-- 检查是否有`升级协议`.
+	if (headers['upgrade'] ~= Upgrade) or (headers['connection'] ~= Connection) or not next(settings) then
+		-- print("失败. 1")
 		return false, "Http Upgrade failed."
 	end
 	headers[':method'], headers[':path'] = h1_req:match("([^ ]+) ([^ ]+) HTTP/1.1")
 	-- var_dump(headers)
-	-- 回应协议升级
-	sock_write(sock, protocol_switch)
-	-- 再次检查是否发送`MAGIC`
-	if sock_read(sock, #MAGIC) ~= MAGIC then
+	-- 回应`协议升级`并再次检查是否发送`MAGIC`
+	if not sock_write(sock, protocol_switch) or sock_read(sock, #MAGIC) ~= MAGIC then
+		-- print("失败. 2")
 		return false
 	end
-	return { headers = headers}
+	-- print("升级成功.")
+	return { headers = headers }
 end
 
 local function send_magic(sock)
@@ -349,7 +357,7 @@ local function read_settings(sock, head)
 	if head.stream_id ~= 0 then -- 规范强制要求
 		return nil, ERRNO_TAB[ERRNO_TAB["PROTOCOL_ERROR"]]
 	end
-	local setings = { head = head, ack = head.flags & 0x01 == 0x01 }
+	local settings = { head = head, ack = head.flags & 0x01 == 0x01 }
 	for _ = 1, head.length // 6, 1 do
 		local packet = sock_read(sock, 6)
 		if not packet then
@@ -358,10 +366,10 @@ local function read_settings(sock, head)
 		local k, v = strunpack(">I2I4", packet)
 		local key = SETTINGS_TAB[k]
 		if key then
-			setings[key] = v
+			settings[key] = v
 		end
 	end
-	return setings
+	return settings
 end
 
 -- 发送SETTINGS包

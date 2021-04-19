@@ -53,6 +53,9 @@ local read_magic = protocol.read_magic
 
 local read_head = protocol.read_head
 
+local read_ping = protocol.read_ping
+local send_ping = protocol.send_ping
+
 local read_data = protocol.read_data
 local send_data = protocol.send_data
 
@@ -275,6 +278,13 @@ local function DISPATCH(self, sock, opt)
       if head.length > 0 then
         local _ = read_settings(sock, head)
         send_settings_ack(sock)
+      end
+    -- 自动回应`PING`
+    elseif tname == "PING" then
+      local info = read_ping(sock, head)
+      local tab = FLAG_TO_TABLE(tname, head.flags)
+      if not tab.ack then
+        send_ping(sock, 0x01, info)
       end
     elseif tname == "GOAWAY" then
       local _ = read_goaway(sock, head)

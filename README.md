@@ -1,7 +1,104 @@
 # http2
 
-Http2 library implemented in lua language.
+  Http2 library implemented in lua language.
 
-## test
+## Introduction
 
-  checkout `test.lua`.
+  High performance 'HTTP2' protocol 'server' and 'client' library based on [cfadmin](https://cfadmin.cn/).
+
+## Code sample
+
+  Next, we will introduce the examples and use methods of 'client' and 'server' respectively.
+
+### Server
+
+<details>
+  <summary>Server code example</summary>
+
+```lua
+require "utils"
+
+local httpd = require "lua-http2.httpd"
+
+local h2 = httpd:new()
+
+-- 注册路由
+h2:route("/", function (req, resp)
+  var_dump(req)
+  resp['body'] = "Loging."
+end)
+
+-- 静态文件路由
+h2:static("static")
+
+-- -- 关闭请求日志
+-- h2:nolog()
+
+h2:listen("localhost", 80)
+
+h2:run()
+```
+
+```bash
+[candy@MacBookPro:~/Documents/cfadmin] $ ./cfadmin
+[2021/04/19 20:24:19] [INFO] h2 listen: 0.0.0.0:80
+[2021/04/19 20:24:19] [INFO] h2 Web Server Running...
+{
+      ["headers"] = {
+            ["host"] = "127.0.0.1",
+            [":scheme"] = "http",
+            ["origin"] = "127.0.0.1",
+            ["accept"] = "*/*",
+            ["user-agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36",
+            [":path"] = "/",
+            [":authority"] = "127.0.0.1",
+            [":method"] = "GET",
+            ["accept-encoding"] = "gzip, deflate, identity",
+      },
+}
+[2021/04/19 20:24:28] - 127.0.0.1 - 127.0.0.1 - / - GET - 200 - req_time: 0.000029/Sec
+```
+</details>
+
+
+### Client
+
+<details>
+  <summary>Client code example</summary>
+
+```lua
+require "utils"
+
+local httpc = require "lua-http2.httpc"
+
+-- 创建对象
+local hc = httpc:new { domain = "http://127.0.0.1/" }
+
+-- 连接到服务器
+if not hc:connect() then
+  return print("连接失败")
+end
+
+-- 发送请求
+local opt, errinfo = hc:request("/", "GET")
+if not opt then
+  return print(false, errinfo)
+end
+
+var_dump(opt)
+```
+
+```bash
+[candy@MacBookPro:~/Documents/cfadmin] $ ./cfadmin
+{
+      ["headers"] = {
+            ["content-type"] = "text/html; charset=utf-8",
+            ["server"] = "cfadmin/0.1",
+            ["date"] = "Mon, 19 Apr 2021 20:24:28 GMT",
+            [":status"] = "200",
+      },
+      ["body"] = "Loging.",
+}
+```
+
+</details>

@@ -268,7 +268,7 @@ local function DISPATCH(self, sock, opt)
   local requests, priority = {}, {}
   if opt.req then
     local req = opt.req
-    if not h2_response(self, sock, sid, h2pack, opt, req, {}) then
+    if not h2_response(self, sock, sid, h2pack, opt, request_builder(req.headers, req.body), {}) then
       h2pack = nil
       return sock:close()
     end

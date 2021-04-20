@@ -258,8 +258,8 @@ local function read_magic(sock)
 	if not msg2 then
 		return false, "the session's socket timeout or connection closed."
 	end
-	local h1_req, headers = msg1 .. msg2, {}
-	for line in h1_req:gmatch("([^\r\n]+)") do
+	local h1req, headers = msg1 .. msg2, {}
+	for line in h1req:gmatch("([^\r\n]+)") do
 		for key, value in line:gmatch("([^ :]+)[ ]*:[ ]*(.+)") do
 			if key and value and key ~= '' and value ~= '' then
 				headers[key:lower()] = value
@@ -280,16 +280,11 @@ local function read_magic(sock)
 		end
 	end
 	-- var_dump(settings)
-	-- 检查是否有`升级协议`.
 	if (headers['upgrade'] ~= Upgrade) or (headers['connection'] ~= Connection) or not next(settings) then
 		return false, "Http Upgrade failed."
 	end
-	headers[':method'], headers[':path'] = h1_req:match("([^ ]+) ([^ ]+) HTTP/1.1")
+	headers[':method'], headers[':path'] = h1req:match("([^ ]+) ([^ ]+) HTTP/1.1")
 	-- var_dump(headers)
-	-- 回应`协议升级`
-	if not sock_write(sock, protocol_switch) then
-		return false
-	end
 	local body = nil
 	-- 需要注意的是:客户端支持的升级协议也可能携带`body`.
 	local content_length = toint(headers['content-length'])
@@ -299,8 +294,9 @@ local function read_magic(sock)
 			return false
 		end
 	end
-	-- 再次检查是否发送`MAGIC`
-	if sock_read(sock, #MAGIC) ~= MAGIC then
+	-- var_dump(headers)
+	-- 检查是否需要`升级协议`? 是否需要发送`MAGIC`?
+	if not sock_write(sock, protocol_switch) or sock_read(sock, #MAGIC) ~= MAGIC then
 		return false
 	end
 	-- print("升级成功.")

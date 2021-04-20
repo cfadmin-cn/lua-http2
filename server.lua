@@ -97,7 +97,8 @@ tab_copy = function (src)
   return dst
 end
 
-local function tab_merge(t1, t2)
+local tab_merge
+tab_merge = function (t1, t2)
   for key, value in pairs(t2) do
     t1[key] = value
   end
@@ -274,7 +275,7 @@ local function DISPATCH(self, sock, opt)
     end
     opt.req = nil
   end
-  while 1 do
+  while true do
     local head = read_head(sock)
     if not head then
       break
@@ -355,7 +356,9 @@ local function DISPATCH(self, sock, opt)
         -- print(crypt.hexencode(concat(ctx.headers)))
         local headers = h2pack:decode(concat(ctx.headers))
         if headers then
-          h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), {})
+          if not h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), {}) then
+            break
+          end
         end
       end
     end

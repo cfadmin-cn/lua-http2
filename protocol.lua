@@ -266,7 +266,8 @@ local function read_magic(sock)
 			end
 		end
 	end
-	local ok, payload = pcall(crypt.base64decode, headers['http2-settings'])
+	-- var_dump(headers)
+	local ok, payload = pcall(crypt.base64urldecode, headers['http2-settings'])
 	if not ok then
 		return false, "Http Upgrade failed, need valid `http-settings`."
 	end
@@ -303,6 +304,7 @@ local function read_magic(sock)
 		return false
 	end
 	-- print("升级成功.")
+	-- var_dump({ headers = headers, body = body })
 	return { headers = headers, body = body }
 end
 

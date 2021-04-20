@@ -8,8 +8,6 @@
   2020-11-06
 ]]
 
-local hpack = require "lua-http2.hpack"
-
 -- local lz = require "lz"
 -- local decompress = lz.compress
 -- local gzcompress = lz.gzcompress
@@ -17,7 +15,6 @@ local hpack = require "lua-http2.hpack"
 local sys = require "sys"
 local now = sys.now
 local new_tab = sys.new_tab
-
 
 local url = require "url"
 local urldecode = url.decode
@@ -31,7 +28,9 @@ local json_decode = json.decode
 local aio = require "aio"
 local aio_stat = aio.stat
 
+local hpack = require "lua-http2.hpack"
 
+local mime = require "protocol.http.mime"
 
 local protocol = require "lua-http2.protocol"
 local TYPE_TAB = protocol.TYPE_TAB
@@ -111,18 +110,12 @@ local function check_path(path)
   for pit in gmatch(path, "([^/]+)") do
     tinsert(paths, pit)
   end
-  local head, tail = paths[1], paths[#paths]
-  if head == point2 or tail == point or tail == point2 then
-    return true
-  end
 	local deep = 1
   for _, p in ipairs(paths) do
-    if p ~= point then
-      if p == point2 then
-        deep = deep - 1
-      else
-        deep = deep + 1
-      end
+    if p == point2 then
+      deep = deep - 1
+    elseif p ~= point then
+      deep = deep + 1
     end
 		if deep <= 0 then
 			return true
@@ -161,14 +154,15 @@ end
 local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
   local s, ipaddr = now(), opt.ipaddr
   local routes, foldor = self.routes, self.foldor
+  -- 注册路由需要解码的.
   local path = urldecode(req['headers'][':path'] or '')
+  -- 注册路由添加了多余的'//'.
   path = gsub(sub(path, 1, (find(path, "?") or 0) - 1), '(/[/]+)', '/')
-  if path:byte(#path) == 47 then
-    path = path:sub(1, -2)
-  end
+  -- 注册路由不是'/', 但是以`/`结尾的
+  path = path ~= '/' and path:byte(#path) == 47 and path:sub(1, -2) or path
   -- 确认路由是否存在
-  local cb = routes[path]
-  if not cb then
+  local callback = routes[path]
+  if not callback then
     -- 是否继续检查静态文件路由
     if not foldor then
       self:tolog(404, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
@@ -192,10 +186,20 @@ local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
       return error_response(sock, h2pack, stream_id, 500, {}, errinfo)
     end
     self:tolog(200, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
-    return normal_response(sock, h2pack, stream_id, 200, { ['content-disposition'] = 'attachment', ['content-type'] = 'application/octet-stream' }, f:read '*a'), f:close()
+    local suffix = match(filepath, '[%.]?([^%./]+)$')
+    local headers = {}
+    local h2_mime = mime[suffix]
+    if type(h2_mime) ~= 'string' then
+      headers['content-type'] = type(h2_mime) == 'table' and h2_mime.type or 'application/octet-stream'
+      headers['content-disposition'] = 'attachment; filename="' .. (filepath:match("[/]?([^/]+)$")) .. '"'
+    else
+      headers['content-type'] = h2_mime
+      headers['content-disposition'] = 'inline; filename="' .. (filepath:match("[/]?([^/]+)$")) .. '"'
+    end
+    return normal_response(sock, h2pack, stream_id, 200, headers, f:read '*a'), f:close()
   end
-  -- 开始处理注册`路由`
-  local ok, info = pcall(cb, tab_copy(req), resp)
+  -- 开始处理注册`路由`回调
+  local ok, info = pcall(callback, tab_copy(req), resp)
   if not ok then
     self:tolog(500, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
     return error_response(sock, h2pack, stream_id, 500, resp.headers, info)

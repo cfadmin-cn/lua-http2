@@ -353,12 +353,13 @@ local function DISPATCH(self, sock, opt)
       if tab.end_stream then
         sid = stream_id
         requests[stream_id] = nil
-        -- print(crypt.hexencode(concat(ctx.headers)))
         local headers = h2pack:decode(concat(ctx.headers))
-        if headers then
-          if not h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), {}) then
-            break
-          end
+        if not headers then
+          send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
+          break
+        end
+        if not h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), {}) then
+          break
         end
       end
     end

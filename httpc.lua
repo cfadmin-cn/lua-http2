@@ -122,9 +122,8 @@ end
 ---@param headers table        @`http2`请求头部(`optional`)
 ---@param body string          @`http2`请求载荷(`optional`)
 ---@param timeout any          @`http2`请求超时(`optional`)
----@return nil|integer         @返回合法的`http`响应状态码`或者`nil`
----@return string|table        @返回合法的`http`响应头部或者出错信息
----@return string|nil          @返回合法的`http`响应数据载荷或者`nil`
+---@return table|nil           @返回合法的`http`响应信息(`Table`).
+---@return nil|string          @正常返回`nil`, 失败返回失败原因.
 function client:request(url, method, headers, body, timeout)
   if not self.connected then
     return nil, "http2 client not connected to the server or session was closed."

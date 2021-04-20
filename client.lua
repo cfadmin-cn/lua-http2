@@ -196,17 +196,11 @@ local function read_response(self, sid, timeout)
           break
         end
         local tname = head.type_name
-        -- 无效的帧类型应该被直接忽略
-        if not tname then
-          err = "Unexpected frame type received."
-          break
-        end
         if tname == "GOAWAY" then
           local info = read_goaway(sock, head)
           err = fmt("{errcode = %d, errinfo = '%s'%s}", info.errcode, info.errinfo, info.trace and ', trace = ' .. info.trace or '')
           break
-        end
-        if tname == "RST_STREAM" then
+        elseif tname == "RST_STREAM" then
           local info = read_rstframe(sock, head)
           local ctx = waits[head.stream_id]
           if ctx then
@@ -217,9 +211,8 @@ local function read_response(self, sid, timeout)
             end
             waits[head.stream_id] = nil
           end
-        end
-        -- 应该忽略PUSH_PROMISE帧
-        if tname == "PUSH_PROMISE" then
+          -- 应该忽略PUSH_PROMISE帧
+        elseif tname == "PUSH_PROMISE" then
           local pid, hds = read_promise(sock, head)
           if pid and hds then
             -- 实现虽然拒绝推送流, 但是流推的头部需要被解码
@@ -231,86 +224,69 @@ local function read_response(self, sid, timeout)
             end
             -- var_dump(h)
           end
-        end
-        if tname == "PING" then
+        elseif tname == "PING" then
           local payload = read_ping(sock, head)
           local tab = FLAG_TO_TABLE(tname, head.flags)
           if not tab.ack then
             -- 回应PING
             self:send(function() return send_ping(sock, 0x01, payload) end)
           end
-        end
-        if tname == "SETTINGS" then
+        elseif tname == "SETTINGS" then
           if head.length > 0 then
             local _ = read_settings(sock, head)
             self:send(function() return send_settings_ack(sock) end )
           end
-        end
-        if tname == "WINDOW_UPDATE" then
+        elseif tname == "WINDOW_UPDATE" then
           local window = read_window_update(sock, head)
           if not window then
             err = "Invalid handshake in `WINDOW_UPDATE` frame."
             break
           end
           self:send(function() return send_window_update(sock, window.window_size) end)
-        end
-        if tname == "HEADERS" then
-          -- print("HEADERS", head.stream_id)
+        elseif tname == "HEADERS" or tname == "DATA" then
+          -- print(tname, head.stream_id)
           local ctx = waits[head.stream_id]
-          local headers = ctx["headers"]
-          -- print(ctx, headers)
-          if ctx and headers then
-            headers[#headers+1] = read_headers(sock, head)
+          if not ctx then
+            self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
+            break
           end
-          local tab = FLAG_TO_TABLE(tname, head.flags)
-          if tab.end_stream then
-            if #ctx["body"] > 0 then
-              ctx["body"] = concat(ctx["body"])
-            end
-            local h, errinfo = self.hpack:decode(concat(headers))
-            if not h then
-              err = errinfo
+          if tname == "HEADERS" then
+            local headers = ctx["headers"]
+            if not headers then
+              self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
               break
             end
-            ctx["headers"] = h
-            if not ctx.cancel then
-              cwakeup(ctx.co, ctx)
-              if ctx.timer then
-                ctx.timer:stop()
-                ctx.timer = nil
-              end
+            headers[#headers+1] = read_headers(sock, head)
+          else
+            local body = ctx["body"]
+            if not body then
+              self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
+              break
             end
-            waits[head.stream_id] = nil
-          end
-        end
-        if tname == "DATA" then
-          -- print("DATA", head.stream_id)
-          local ctx = waits[head.stream_id]
-          local body = ctx["body"]
-          -- print(ctx, body)
-          if ctx and body then
             body[#body+1] = read_data(sock, head)
           end
           local tab = FLAG_TO_TABLE(tname, head.flags)
-          if tab.end_stream then
-            if #ctx["headers"] > 0 then
-              local h, errinfo = self.hpack:decode(concat(ctx["headers"]))
-              if not h then
-                err = errinfo
-                break
-              end
-              ctx["headers"] = h
+          if tab.end_stream then -- 当前流数据接收完毕.
+            if ctx.cancel then
+              break
             end
-            if not ctx.cancel then
-              ctx["body"] = concat(body)
-              cwakeup(ctx.co, ctx)
-              if ctx.timer then
-                ctx.timer:stop()
-                ctx.timer = nil
-              end
+            local headers = self.hpack:decode(concat(ctx["headers"]))
+            if type(headers) ~= 'table' then
+              self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
+              break
+            end
+            ctx.headers = headers
+            cwakeup(ctx.co, ctx)
+            if ctx.timer then
+              ctx.timer:stop()
+              ctx.timer = nil
             end
             waits[head.stream_id] = nil
           end
+        else
+          -- 无效的帧类型应该被直接忽略
+          err = "Unexpected frame type received."
+          break
         end
       end
       -- 如果是意外关闭了连接, 则需要框架内部主动回收资源
@@ -353,7 +329,7 @@ end
 local function send_request(self, headers, body, timeout)
   local sock = self.sock
   self.sid = new_stream_id(self.sid)
-  self.waits[self.sid] = { co = cself(), headers = new_tab(3, 0), body = new_tab(32, 0) }
+  self.waits[self.sid] = { co = cself(), headers = new_tab(8, 0), body = new_tab(16, 0) }
   -- 发送请求头部
   self:send(function() return send_headers(sock, body and 0x04 or 0x05, self.sid, headers) end)
 

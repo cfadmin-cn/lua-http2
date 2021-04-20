@@ -30,7 +30,7 @@ local ipairs = ipairs
 local assert = assert
 
 local concat = table.concat
-
+local toint = math.tointeger
 local strpack = string.pack
 local strunpack = string.unpack
 
@@ -167,7 +167,7 @@ local ERRNO_TAB = {
 --[[
 
 +----------------------------------------------------------------+
-|                 Length (24)           |  Type (8) |  Flags (8) |  
+|                 Length (24)           |  Type (8) |  Flags (8) |
 +-+-------------+-----------------------+------------------------+
 |R|                    Stream Identifier (31)                    |
 +-+-------------+-----------------------+------------------------+
@@ -281,18 +281,29 @@ local function read_magic(sock)
 	-- var_dump(settings)
 	-- 检查是否有`升级协议`.
 	if (headers['upgrade'] ~= Upgrade) or (headers['connection'] ~= Connection) or not next(settings) then
-		-- print("失败. 1")
 		return false, "Http Upgrade failed."
 	end
 	headers[':method'], headers[':path'] = h1_req:match("([^ ]+) ([^ ]+) HTTP/1.1")
 	-- var_dump(headers)
-	-- 回应`协议升级`并再次检查是否发送`MAGIC`
-	if not sock_write(sock, protocol_switch) or sock_read(sock, #MAGIC) ~= MAGIC then
-		-- print("失败. 2")
+	-- 回应`协议升级`
+	if not sock_write(sock, protocol_switch) then
+		return false
+	end
+	local body = nil
+	-- 需要注意的是:客户端支持的升级协议也可能携带`body`.
+	local content_length = toint(headers['content-length'])
+	if content_length and content_length > 0 then
+		body = sock_read(sock, content_length)
+		if not body then
+			return false
+		end
+	end
+	-- 再次检查是否发送`MAGIC`
+	if sock_read(sock, #MAGIC) ~= MAGIC then
 		return false
 	end
 	-- print("升级成功.")
-	return { headers = headers }
+	return { headers = headers, body = body }
 end
 
 local function send_magic(sock)

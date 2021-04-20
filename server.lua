@@ -156,12 +156,15 @@ local function normal_response(sock, h2pack, sid, code, headers, body)
   )
 end
 
-
+-- 路由处理
 local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
   local s, ipaddr = now(), opt.ipaddr
   local routes, foldor = self.routes, self.foldor
   local path = urldecode(req['headers'][':path'] or '')
   path = gsub(sub(path, 1, (find(path, "?") or 0) - 1), '(/[/]+)', '/')
+  if path:byte(#path) == 47 then
+    path = path:sub(1, -2)
+  end
   -- 确认路由是否存在
   local cb = routes[path]
   if not cb then
@@ -264,7 +267,11 @@ local function DISPATCH(self, sock, opt)
   local h2pack = hpack:new(8192)
   local requests, priority = {}, {}
   if opt.req then
-    h2_response(self, sock, sid, h2pack, opt, opt.req, {})
+    local req = opt.req
+    if not h2_response(self, sock, sid, h2pack, opt, req, {}) then
+      h2pack = nil
+      return sock:close()
+    end
     opt.req = nil
   end
   while 1 do
@@ -316,7 +323,7 @@ local function DISPATCH(self, sock, opt)
       if not window then
         break
       end
-      send_window_update(sock, window.window_size)
+      -- send_window_update(sock, window.window_size)
     -- 读取`HEADERS`帧或`DATA`帧
     elseif tname == "HEADERS" or tname == "DATA" then
       local tab = FLAG_TO_TABLE(tname, head.flags)
@@ -380,8 +387,9 @@ local function HTTPD_DISPATCH(sock, opt, self)
     -- SET SETTINGS MAX HEADER LIST SIZE
     {0x06, SETTINGS_TAB["SETTINGS_MAX_HEADER_LIST_SIZE"]},
   })
-  -- 是否必须要发送呢?
-  -- send_window_update(sock, 2 ^ 24 - 1)
+  -- 主动推送WINDOW_UPDATE
+  send_window_update(sock, 2 ^ 24 - 1)
+  -- 如果是HTTP/1.1升级协议, 则需要包装升级协议后的响应.
   if type(req) == 'table' then
     opt.req = req
   end

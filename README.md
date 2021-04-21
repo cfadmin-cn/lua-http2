@@ -10,23 +10,33 @@
 
   using `local httpc = require "lua-http2.httpc"`.
 
-### 1. `function httpc:new(opt) return httpc-class end`
+### 1. `function httpc:new(opt) httpc-class end`
 
   Use the `new` method creates an `httpc request object`.
 
-### 2. `function httpc:connect() return boolean end`
+### 2. `function httpc:connect() boolean end`
 
-  Use the 'connect' method of the 'httpc' object to connect to the server; return 'true' for success, return 'false' and 'string' for failure.
+  Use the `connect` method of the `httpc` object to connect to the server; return `true` for success, return `false` and `string` for failure.
 
-### 3. `function httpc:request(url, method, headers, body|args, timeout) return response end`
+### 3. `function httpc:request(url, method, headers, args, timeout) response end`
 
-  Use the 'request' method of the 'httpc' object to connect to the server; return 'true' for success, return 'false' and 'string' for failure.
+  Use the `request` method of the `httpc` object to request Server.
+
+  * `url` - http2 `path`. (e.g `/api`);
+
+  * `method` - http2 `method`. (e.g `GET`、`POST`);
+
+  * `headers` - http2 headers. (e.g `{["content-type"] = "application/json"}`)
+
+  * `body|args` - http2 args or body. (e.g `table = {{"a",1}, {"b",2}}`、`"a=1&b=2"`、`"{}"`)
+
+  * `timeout` - request timeout. (timeout `MUST` > 0)
 
 ## Api - Http2 Server
 
   using `local httpd = require "lua-http2.httpd"`.
 
-### 1. `function httpd:new(opt) return httpd-class end`
+### 1. `function httpd:new(opt) httpd-class end`
 
   Use the `new` method creates an `httpd server object`.
 

@@ -4,7 +4,7 @@
 
 ## Introduction
 
-  High performance 'HTTP2' protocol 'server' and 'client' library based on [cfadmin](https://cfadmin.cn/).
+  High performance `http2` protocol `server` and `client` library based on [cfadmin](https://cfadmin.cn/).
 
 ## Api - Http2 Client
 

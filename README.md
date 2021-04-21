@@ -26,9 +26,9 @@
 
   * `method` - http2 `method`. (e.g `GET`、`POST`);
 
-  * `headers` - http2 headers. (e.g `{["content-type"] = "application/json"}`)
+  * `headers` - http2 `headers`. (e.g `{["content-type"] = "application/json"}`)
 
-  * `body|args` - http2 args or body. (e.g `table = {{"a",1}, {"b",2}}`、`"a=1&b=2"`、`"{}"`)
+  * `body|args` - http2 `args` or `body`. (e.g `table = {{"a",1}, {"b",2}}`、`"a=1&b=2"`、`"{}"`)
 
   * `timeout` - request timeout. (timeout `MUST` > 0)
 

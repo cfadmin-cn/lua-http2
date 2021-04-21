@@ -6,6 +6,58 @@
 
   High performance 'HTTP2' protocol 'server' and 'client' library based on [cfadmin](https://cfadmin.cn/).
 
+## Api - Http2 Client
+
+  using `local httpc = require "lua-http2.httpc"`.
+
+### 1. `function httpc:new(opt) return httpc-class end`
+
+  Use the `new` method creates an `httpc request object`.
+
+### 2. `function httpc:connect() return boolean end`
+
+  Use the 'connect' method of the 'httpc' object to connect to the server; return 'true' for success, return 'false' and 'string' for failure.
+
+### 3. `function httpc:request(url, method, headers, body|args, timeout) return response end`
+
+  Use the 'request' method of the 'httpc' object to connect to the server; return 'true' for success, return 'false' and 'string' for failure.
+
+## Api - Http2 Server
+
+  using `local httpd = require "lua-http2.httpd"`.
+
+### 1. `function httpd:new(opt) return httpd-class end`
+
+  Use the `new` method creates an `httpd server object`.
+
+### 2. `function httpd:route(path, callback(req, resp)) end`
+
+  Use the `route` method to register an `http2` route callback.
+
+  `req` - is the request context of the client.
+
+  `resp` - can include 'response content' and 'response header'`.
+
+### 3. `function httpd:static(folder) end`
+
+  Specify the `folder` parameter as the static file lookup directory.
+
+### 4. `function httpd:listen(ip, port) end`
+
+  Start listening to the specified `IP` and `Port`.
+
+### 5. `function httpd:log(filepath) end`
+
+  Write the request log to the file specified in `filepath`.
+
+### 6. `function httpd:nolog() end`
+
+  Turn off `print` and `write` any request records.
+
+### 7. `function httpd:run() end`
+
+  All code after this method is not executed.
+
 ## Code sample
 
   Next, we will introduce the examples and use methods of 'client' and 'server' respectively.

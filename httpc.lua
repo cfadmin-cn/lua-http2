@@ -12,6 +12,9 @@ local new_tab = sys.new_tab
 local cf = require "cf"
 local cfork = cf.fork
 
+local url = require "url"
+local urlencod = url.encode
+
 local h2_client = require "lua-http2.client"
 local send_request = h2_client.send_request
 local split_domain = h2_client.split_domain
@@ -137,6 +140,15 @@ function client:request(url, method, headers, body, timeout)
   if type(headers) ~= 'table' and headers then
     return nil, "Invalid request headers."
   end
+  -- `table`类型的`body`只支持`x-www-form-urlencoded`类型
+  if type(body) == 'table' then
+    local tab = new_tab(#body, 0)
+    for _, items in ipairs(body) do
+      tab[#tab+1] = urlencod(items[1]) .. '=' .. urlencod(items[2])
+    end
+    body = table.concat(tab, "&")
+  end
+  method = method:upper()
   local args
   if method == "GET" and type(body) == 'string' and body ~= '' then
     args = body
@@ -149,7 +161,7 @@ function client:request(url, method, headers, body, timeout)
       [":method"] = method:upper(),
       [":scheme"] = info.scheme,
       [":authority"] = info.domain,
-      [":path"] = url .. (args or ""),
+      [":path"] = url .. (args and ('?' .. args) or ""),
     }
   ) .. h2pack:encode(
     {

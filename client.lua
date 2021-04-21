@@ -68,6 +68,8 @@ local match = string.match
 local toint = math.tointeger
 local concat = table.concat
 
+local pattern = string.rep(".", 65535)
+
 -- 必须遵守此stream id递增规则
 local function new_stream_id(num)
   if not toint(num) or num < 1 then
@@ -328,19 +330,27 @@ end
 
 local function send_request(self, headers, body, timeout)
   local sock = self.sock
-  self.sid = new_stream_id(self.sid)
-  self.waits[self.sid] = { co = cself(), headers = new_tab(8, 0), body = new_tab(16, 0) }
+  local sid = new_stream_id(self.sid)
+  self.sid = sid
+  self.waits[sid] = { co = cself(), headers = new_tab(8, 0), body = new_tab(16, 0) }
   -- 发送请求头部
-  self:send(function() return send_headers(sock, body and 0x04 or 0x05, self.sid, headers) end)
-
+  self:send(function() return send_headers(sock, body and 0x04 or 0x05, sid, headers) end)
   -- 发送请求主体
   if body then
-    local max_body_size = 32737
-    if #body > max_body_size then
-      -- TODO
-      assert(nil, "Prohibit sending http2 payloads that need to be subcontracted.")
-    else
+    local total = #body
+    local size = total
+    local max_body_size = 16777205
+    if size < max_body_size then
       self:send(function() return send_data(sock, 0x01, self.sid, body) end)
+    else
+      -- 分割成小数据后发送
+      for line in body:gmatch(pattern) do
+        size = size - #line
+        self:send(function() return send_data(sock, size == 0 and 0x0 or 0x01, self.sid, line) end)
+      end
+      if size > 0 then
+        self:send(function() return send_data(sock, size == 0 and 0x0 or 0x01, self.sid, body:sub(total - size + 1)) end)
+      end
     end
   end
   return read_response(self, self.sid, timeout)

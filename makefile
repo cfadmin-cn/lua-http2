@@ -11,10 +11,10 @@ RM = rm -rf
 MV = mv
 
 INCLUDES += -I../../src -I../../../src -I/usr/local/include
-LIBS += -L../ -L../../ -L../../../ -L/usr/local/LIBS
+LIBS += -L../ -L../../ -L../../../ -L/usr/local/lib
 CFLAGS += -g0 -O3 -shared -fPIC
 MICRO += -fno-omit-frame-pointer -Wno-implicit-fallthrough -Wall -Wextra -Wno-unused-parameter
-DLL += -lcore -lnghttp2
+DLL += -lcore
 
 build:
 	@$(CC) -o lhpack.so lhpack.c hpack.c common.c $(INCLUDES) $(LIBS) $(CFLAGS) $(MICRO) $(DLL)

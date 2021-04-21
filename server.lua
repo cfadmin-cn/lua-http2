@@ -84,6 +84,8 @@ local concat = table.concat
 local os_date = os.date
 local tinsert = table.insert
 
+local pattern = string.rep('.', 8192)
+
 local point = '\x2e'        -- '.'
 local point2 = '\x2e\x2e'   -- '..'
 
@@ -124,10 +126,52 @@ local function check_path(path)
 	return false
 end
 
--- 响应请求
+---@comment 响应请求
+---@param sock     table       @Socket对象
+---@param sid      integer     @Stream ID
+---@param headers  string      @`http2`头部
+---@param body     string      @`http2`响应
+---@return boolean  @`True`表示响应成功, `False`表示发送失败或断开了连接.
 local function make_response(sock, sid, headers, body)
   -- 发送回应客户端
-  return send_headers(sock, body and 0x04 or 0x05, sid, headers) and body and send_data(sock, nil, sid, body) or false
+  -- return send_headers(sock, body and 0x04 or 0x05, sid, headers) and body and send_data(sock, nil, sid, body) or false
+  -- 首先发送`HEADER`帧来确定是否断开连接.
+  if not send_headers(sock, body and 0x04 or 0x05, sid, headers) then
+    return false
+  end
+  -- 如果无需发送`DATA`帧, 则直接返回`true`.
+  if not body then
+    return true
+  end
+  local total = #body
+  local size = #body
+  if size < 16777205 then
+    return send_data(sock, nil, sid, body)
+  end
+  -- 分片发送
+  for line in body:gmatch(pattern) do
+    size = size - #line
+    if not send_data(sock, size == 0 and 0x01 or 0x00, sid, line) then
+      return false
+    end
+  end
+  if size > 0 then
+    return send_data(sock, 0x01, sid, body:sub(total - size + 1))
+  end
+  return true
+end
+
+-- 文件响应
+local function file_response(sock, h2pack, sid, code, headers, f)
+  if not send_headers(sock, 0x04, sid, h2pack:encode({ [':status'] = toint(code) >= 200 and toint(code) < 400 and code or 500 }) .. h2pack:encode(tab_merge({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['content-type'] = "text/html; charset=utf-8", ['server'] = "cfadmin/0.1" }, headers or {}))) then
+    return false
+  end
+  for line in f:lines(65535) do
+    if not send_data(sock, #line < 65535 and 0x01 or 0x00, sid, line) then
+      return false
+    end
+  end
+  return true
 end
 
 -- 错误响应
@@ -136,7 +180,7 @@ local function error_response(sock, h2pack, sid, code, headers, body)
     sock, sid,
     h2pack:encode({ [':status'] = toint(code) >= 400 and toint(code) <= 515 and code or 500 }) ..
     h2pack:encode(tab_merge({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['content-type'] = "text/html; charset=utf-8", ['server'] = "cfadmin/0.1" }, headers or {})),
-    type(body) == 'string' and body or nil
+    type(body) == 'string' and body ~= '' and body or nil
   )
 end
 
@@ -146,7 +190,7 @@ local function normal_response(sock, h2pack, sid, code, headers, body)
     sock, sid,
     h2pack:encode({ [':status'] = toint(code) >= 200 and toint(code) < 400 and code or 500 }) ..
     h2pack:encode(tab_merge({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['content-type'] = "text/html; charset=utf-8", ['server'] = "cfadmin/0.1" }, headers or {})),
-    type(body) == 'string' and body or nil
+    type(body) == 'string' and body ~= '' and body or nil
   )
 end
 
@@ -196,7 +240,7 @@ local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
       headers['content-type'] = h2_mime
       headers['content-disposition'] = 'inline; filename="' .. (filepath:match("[/]?([^/]+)$")) .. '"'
     end
-    return normal_response(sock, h2pack, stream_id, 200, headers, f:read '*a'), f:close()
+    return file_response(sock, h2pack, stream_id, 200, headers, f), f:close()
   end
   -- 开始处理注册`路由`回调
   local ok, info = pcall(callback, tab_copy(req), resp)
@@ -302,8 +346,9 @@ local function DISPATCH(self, sock, opt)
       local _ = read_goaway(sock, head)
       break
     elseif tname == "RST_STREAM" then
-      local info = read_rstframe(sock, head)
+      -- local info = read_rstframe(sock, head)
       -- var_dump(info)
+      read_rstframe(sock, head)
       break
     elseif tname == "PRIORITY" then
       -- 如果需要预留具有优先级流ID

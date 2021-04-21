@@ -16,7 +16,7 @@
 
 依赖项目地址:
 
-  https://github.com/CandyMi/lhpack and `nghttp2`.
+  内置已经有一份`hpack`实现, 但是您可以选择使用 https://github.com/CandyMi/lhpack)(nghttp2-hpack).
 
 编写日期:
 

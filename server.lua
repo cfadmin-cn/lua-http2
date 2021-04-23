@@ -8,9 +8,16 @@
   2020-11-06
 ]]
 
--- local lz = require "lz"
--- local decompress = lz.compress
--- local gzcompress = lz.gzcompress
+local lz = require "lz"
+local compress = lz.compress
+local gzcompress = lz.gzcompress
+
+-- 如果有安装lua-br, 可以优先使用支持的Brotli算法.
+local brcompress
+local ok, br = pcall(require, "lbr")
+if ok and type(br) == "table" and type(br.compress) == "function" then
+  brcompress = br.compress
+end
 
 local sys = require "sys"
 local now = sys.now
@@ -248,6 +255,23 @@ local function h2_response(self, sock, stream_id, h2pack, opt, req, resp)
     self:tolog(500, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
     return error_response(sock, h2pack, stream_id, 500, resp.headers, info)
   end
+  if self.gzip and type(resp.body) == 'string' and resp.body ~= '' then
+    local bsize = #resp.body
+    if bsize > 128 then
+      local ac = req['headers']['accept-encoding'] or req['headers']['Accept-Encoding']
+      resp.headers = type(resp.headers) == 'table' and resp.headers or {}
+      if brcompress and find((ac or ""):lower(), 'br') then
+        resp.headers['content-encoding'] = 'br'
+        resp.body = brcompress(resp.body)
+      elseif find((ac or ""):lower(), 'gzip') then
+        resp.headers['content-encoding'] = 'gzip'
+        resp.body = gzcompress(resp.body)
+      elseif find((ac or ""):lower(), 'deflate') then
+        resp.headers['content-encoding'] = 'deflate'
+        resp.body = compress(resp.body)
+      end
+    end
+  end
   self:tolog(200, req['headers'][':path'], ipaddr, req['headers']['X-Real-IP'] or req['headers']['X-real-ip'] or ipaddr, req['headers'][':method'], now() - s)
   return normal_response(sock, h2pack, stream_id, toint(resp.code) or 200, resp.headers, resp.body)
 end
@@ -317,7 +341,7 @@ local function DISPATCH(self, sock, opt)
   local requests, priority = {}, {}
   if opt.req then
     local req = opt.req
-    if not h2_response(self, sock, sid, h2pack, opt, request_builder(req.headers, req.body), {}) then
+    if not h2_response(self, sock, sid, h2pack, opt, request_builder(req.headers, req.body), { headers = {} }) then
       h2pack = nil
       return sock:close()
     end
@@ -407,7 +431,7 @@ local function DISPATCH(self, sock, opt)
           send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
           break
         end
-        if not h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), {}) then
+        if not h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), { headers = {} }) then
           break
         end
       end

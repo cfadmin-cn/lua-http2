@@ -115,6 +115,11 @@ function server:nolog()
   self.CLOSE_LOG = true
 end
 
+---comment 开启`body`压缩支持
+function server:enable_gzip()
+  self.gzip = true
+end
+
 ---comment 此方法应该在配置完成所有`httpd`配置后调用, 此方法之后的代码或将永远不会被执行.
 function server:run()
   if self.ip and self.port then

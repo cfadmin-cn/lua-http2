@@ -18,7 +18,8 @@ static int lhpack_encode(lua_State *L) {
   lua_pushnil(L);
   while (lua_next(L, 2)) {
     size_t lname, lvalue;
-    headers[index].flags = 0;
+    // headers[index].flags = 0;
+    headers[index].flags = CNO_HEADER_NOT_INDEXED;
     headers[index].name.data  = lua_tolstring(L, -2, &lname);
     headers[index].name.size  = lname;
     headers[index].value.data  = lua_tolstring(L, -1, &lvalue);

@@ -89,6 +89,7 @@ local gmatch = string.gmatch
 local toint = math.tointeger
 local concat = table.concat
 local os_date = os.date
+local os_time = os.time
 local tinsert = table.insert
 
 local pattern = string.rep('.', 8192)
@@ -387,7 +388,7 @@ local function DISPATCH(self, sock, opt)
       end
       local ctx = requests[head.stream_id]
       if not ctx then
-        send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
+        send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"], head.stream_id)
         break
       end
       -- `CONTINUATION`帧是`headers`的延伸.
@@ -405,7 +406,7 @@ local function DISPATCH(self, sock, opt)
       if sid > stream_id then
         -- priority 帧有预留则保留此流ID, 否则当做协议错误处理
         if not priority[stream_id] then
-          send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
+          send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"], stream_id)
           break
         end
         -- 预留的sid需要被清除掉
@@ -425,10 +426,10 @@ local function DISPATCH(self, sock, opt)
       end
       if tab.end_stream then
         sid = stream_id
-        requests[stream_id] = nil
+        requests[sid] = nil
         local headers = h2pack:decode(concat(ctx.headers))
         if not headers then
-          send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"])
+          send_goaway(sock, ERRNO_TAB["PROTOCOL_ERROR"], sid)
           break
         end
         if not h2_response(self, sock, stream_id, h2pack, opt, request_builder(headers, #ctx.body > 0 and concat(ctx.body) or nil), { headers = {} }) then
@@ -437,6 +438,7 @@ local function DISPATCH(self, sock, opt)
       end
     end
   end
+  h2pack = nil
   return sock:close()
 end
 

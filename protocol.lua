@@ -429,8 +429,8 @@ local function read_goaway(sock, head)
 end
 
 -- 发送`GOAWAY`包
-local function send_goaway(sock, errno)
-  return send_head(sock, 8, 0x07, 0x00, 0x00) and send_body(sock, strpack(">I4I4", 0x00, errno or 0x00))
+local function send_goaway(sock, errno, sid)
+  return send_head(sock, 8, 0x07, 0x00, sid or 0x00) and send_body(sock, strpack(">I4I4", 0x00, errno or 0x00))
 end
 
 -- 读取`WINDOW_UPDATE`包

@@ -165,14 +165,12 @@ function client:request(url, method, headers, body, timeout)
     }
   ) .. h2pack:encode(
     {
-      ["origin"] = info.domain,
-      ["host"] = info.domain,
       ["accept"] = "*/*",
       ["accept-encoding"] = "gzip, deflate, identity",
       ["content-length"] = body and #body or nil,
       ["user-agent"] = ua.get_user_agent(),
     }
-  ) .. h2pack:encode(headers or {})
+  ) .. (h2pack:encode(headers or {}) or "")
   return send_request(self, header, body, timeout)
 end
 

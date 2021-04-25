@@ -278,6 +278,12 @@ local function read_response(self, sid, timeout)
               break
             end
             ctx.headers = headers
+            local body = ctx.body
+            if #body > 0 then
+              ctx.body = concat(body)
+            else
+              ctx.body = nil
+            end
             cwakeup(ctx.co, ctx)
             if ctx.timer then
               ctx.timer:stop()
@@ -341,15 +347,15 @@ local function send_request(self, headers, body, timeout)
     local size = total
     local max_body_size = 16777205
     if size < max_body_size then
-      self:send(function() return send_data(sock, 0x01, self.sid, body) end)
+      self:send(function() return send_data(sock, 0x01, sid, body) end)
     else
       -- 分割成小数据后发送
       for line in body:gmatch(pattern) do
         size = size - #line
-        self:send(function() return send_data(sock, size == 0 and 0x0 or 0x01, self.sid, line) end)
+        self:send(function() return send_data(sock, size == 0 and 0x0 or 0x01, sid, line) end)
       end
       if size > 0 then
-        self:send(function() return send_data(sock, size == 0 and 0x0 or 0x01, self.sid, body:sub(total - size + 1)) end)
+        self:send(function() return send_data(sock, 0x01, sid, body:sub(total - size + 1)) end)
       end
     end
   end

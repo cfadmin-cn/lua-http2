@@ -13,12 +13,10 @@ static int lhpack_encode(lua_State *L) {
 
   size_t n = 512;
   struct cno_header_t headers[n];
-  // printf("1\n");
   size_t index = 0;
   lua_pushnil(L);
+  size_t lname, lvalue;
   while (lua_next(L, 2)) {
-    size_t lname, lvalue;
-    // headers[index].flags = 0;
     headers[index].flags = CNO_HEADER_NOT_INDEXED;
     headers[index].name.data  = lua_tolstring(L, -2, &lname);
     headers[index].name.size  = lname;
@@ -27,7 +25,6 @@ static int lhpack_encode(lua_State *L) {
     lua_pop(L, 1);
     index++;
   }
-  // printf("2\n");
   /* 如果是一个空表则返回空字符串 */
   if (!index) {
     lua_pushliteral(L, "");
@@ -36,7 +33,6 @@ static int lhpack_encode(lua_State *L) {
 
   struct cno_buffer_dyn_t hpack_buffer;
   memset(&hpack_buffer, 0x0, sizeof(struct cno_buffer_dyn_t));
-  // printf("3\n");
   int ret = 0;
   if (CNO_OK != (ret = cno_hpack_encode(hpack, &hpack_buffer, headers, index))) {
     lua_pushnil(L);
@@ -83,6 +79,8 @@ static int lhpack_decode(lua_State *L) {
       lua_rawset(L, -3);
     }
   }
+  // 清理内存空间
+  cno_hpack_free_header(headers);
 
   return 1;
 }
@@ -90,9 +88,10 @@ static int lhpack_decode(lua_State *L) {
 // 垃圾回收
 static int lhpack_gc(lua_State *L) {
   struct cno_hpack_t *hpack = luaL_checkudata(L, 1, "__HPACK__");
-  if (hpack)
-    cno_hpack_clear(hpack);
-  return 0;
+  if (!hpack)
+    return 0;
+  cno_hpack_clear(hpack);
+  return 1;
 }
 
 // 创建对象
@@ -105,6 +104,7 @@ static int lhpack_new(lua_State *L) {
     tsize = 4096;
   // memset(hpack, 0x0, sizeof(struct cno_hpack_t));
   cno_hpack_init(hpack, tsize);
+  cno_hpack_setlimit(hpack, tsize);
   luaL_setmetatable(L, "__HPACK__");
   return 1;
 }
@@ -143,5 +143,6 @@ static inline void hpack_init(lua_State *L) {
 LUAMOD_API int luaopen_lhpack(lua_State *L) {
   luaL_checkversion(L);
   hpack_init(L);
+  LOG("WARN", "测试不保证可用性, 生产环境请使用: 'https://github.com/CandyMi/lua-hpack'.");
   return 1;
 }

@@ -92,8 +92,6 @@ local os_date = os.date
 local os_time = os.time
 local tinsert = table.insert
 
-local pattern = string.rep('.', 8192)
-
 local point = '\x2e'        -- '.'
 local point2 = '\x2e\x2e'   -- '..'
 
@@ -137,37 +135,58 @@ end
 ---@comment 响应请求
 ---@param sock     table       @Socket对象
 ---@param sid      integer     @Stream ID
----@param headers  string      @`http2`头部
+---@param h1       string      @`http2`头部分片1
+---@param h2       string      @`http2`头部分片2
 ---@param body     string      @`http2`响应
----@return boolean  @`True`表示响应成功, `False`表示发送失败或断开了连接.
-local function make_response(sock, sid, headers, body)
-  -- 发送回应客户端
-  -- return send_headers(sock, body and 0x04 or 0x05, sid, headers) and body and send_data(sock, nil, sid, body) or false
-  -- 首先发送`HEADER`帧来确定是否断开连接.
-  if not send_headers(sock, body and 0x04 or 0x05, sid, headers) then
+---@return boolean             @`True`表示响应成功, `False`表示发送失败或断开了连接.
+local function make_response(sock, sid, h1, h2, body)
+  -- 发送响应头部
+  if not send_headers(sock, body and 0x04 or 0x05, sid, h1) then
     return false
   end
-  -- 如果无需发送`DATA`帧, 则直接返回`true`.
+  -- 检查分片头部是否存在
+  h2 = (h2 and h2 ~= '') and h2 or nil
+  -- 检查是否有响应体要发送
   if not body then
+    -- 如果没有响应体, 那就尝试发送h2.
+    if h2 and not send_headers(sock, nil, sid, h2) then
+      return false
+    end
     return true
   end
   local total = #body
-  local size = #body
-  if size < 16777205 then
-    return send_data(sock, nil, sid, body)
-  end
-  -- 分片发送
-  for line in body:gmatch(pattern) do
-    size = size - #line
-    if not send_data(sock, size == 0 and 0x01 or 0x00, sid, line) then
+  -- 发送响应体的
+  if total < 65535 then
+    if not send_data(sock, h2 and 0x00 or 0x01, sid, body) then
       return false
     end
+  else
+    local s, e = 1, 65534
+    local buffers = new_tab(128, 0)
+    while true do
+      buffers[#buffers+1] = body:sub(s, e)
+      if e >= total then
+        break
+      end
+      s = e + 1
+      e = s + 65534
+    end
+    -- 分片发送
+    for _, buf in ipairs(buffers) do
+      print(total, #buf)
+      -- flag有先后判断顺序, 不能归并到下面的三元运算内.
+      local flag = #buf < 65535 and 0x01 and 0x00
+      if not send_data(sock, h2 and 0x00 or flag, sid, buf) then
+        return false
+      end
+    end
   end
-  if size > 0 then
-    return send_data(sock, 0x01, sid, body:sub(total - size + 1))
+  if h2 and not send_headers(sock, nil, sid, h2) then
+    return false
   end
   return true
 end
+
 
 -- 文件响应
 local function file_response(sock, h2pack, sid, code, headers, f)
@@ -184,20 +203,28 @@ end
 
 -- 错误响应
 local function error_response(sock, h2pack, sid, code, headers, body)
+  local content_type = headers['content-type'] or "text/html; charset=utf-8"
+  headers[':status'], headers['content-type'] = nil, nil
   return make_response(
     sock, sid,
-    h2pack:encode({ [':status'] = toint(code) >= 400 and toint(code) <= 515 and code or 500 }) ..
-    h2pack:encode(tab_merge({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['content-type'] = "text/html; charset=utf-8", ['server'] = "cfadmin/0.1" }, headers or {})),
+    h2pack:encode({ [':status'] = toint(code) >= 400 and toint(code) <= 515 and code or 500 })
+    ..
+    h2pack:encode({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['server'] = "cfadmin/0.1", ['content-type'] = content_type }),
+    h2pack:encode(headers),
     type(body) == 'string' and body ~= '' and body or nil
   )
 end
 
 -- 普通响应
 local function normal_response(sock, h2pack, sid, code, headers, body)
+  local content_type = headers['content-type'] or "text/html; charset=utf-8"
+  headers[':status'], headers['content-type'] = nil, nil
   return make_response(
     sock, sid,
-    h2pack:encode({ [':status'] = toint(code) >= 200 and toint(code) < 400 and code or 500 }) ..
-    h2pack:encode(tab_merge({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['content-type'] = "text/html; charset=utf-8", ['server'] = "cfadmin/0.1" }, headers or {})),
+    h2pack:encode({ [':status'] = toint(code) >= 200 and toint(code) < 400 and code or 500 })
+    ..
+    h2pack:encode({ ['date'] = os_date("%a, %d %b %Y %X GMT"), ['server'] = "cfadmin/0.1", ['content-type'] = content_type }),
+    h2pack:encode(headers),
     type(body) == 'string' and body ~= '' and body or nil
   )
 end

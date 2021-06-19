@@ -114,22 +114,18 @@ end
 
 -- 检查路径有效性
 local function check_path(path)
-  local paths = {}
-  for pit in gmatch(path, "([^/]+)") do
-    tinsert(paths, pit)
-  end
-	local deep = 1
-  for _, p in ipairs(paths) do
-    if p == point2 then
+  local deep = 1
+  for r in gmatch(path, "/([^/#%?]+)") do
+    if r == point2 then
       deep = deep - 1
-    elseif p ~= point then
+    elseif r ~= point then
       deep = deep + 1
     end
-		if deep <= 0 then
-			return true
-		end
-	end
-	return false
+    if deep == 0 then
+      return true
+    end
+  end
+  return false
 end
 
 ---@comment 响应请求

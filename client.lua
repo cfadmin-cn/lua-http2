@@ -252,15 +252,14 @@ local function read_response(self, sid, timeout)
             self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
             break
           end
-          if tname == "HEADERS" then
-            local headers = ctx["headers"]
-            if not headers then
+          local headers, body = ctx["headers"], ctx["body"]
+          if tname == "HEADERS" and head.length > 0 then
+            if not headers  then
               self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
               break
             end
             headers[#headers+1] = read_headers(sock, head)
-          else
-            local body = ctx["body"]
+          elseif tname == "DATA" and head.length > 0 then
             if not body then
               self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
               break
@@ -272,13 +271,11 @@ local function read_response(self, sid, timeout)
             if ctx.cancel then
               break
             end
-            local headers = self.hpack:decode(concat(ctx["headers"]))
-            if type(headers) ~= 'table' then
+            ctx.headers = self.hpack:decode(concat(headers))
+            if not ctx.headers then
               self:send(function () send_goaway(sock, ERRNO_TAB[1]) end)
               break
             end
-            ctx.headers = headers
-            local body = ctx.body
             if #body > 0 then
               ctx.body = concat(body)
             else
@@ -306,7 +303,7 @@ local function read_response(self, sid, timeout)
             ctx.timer:stop()
             ctx.timer = nil
           end
-          cwakeup(ctx.co, nil, err or "The http2 server unexpectedly closed the network connection.")
+          cwakeup(ctx.co, false, err or "The http2 server unexpectedly closed the network connection.")
         end
         self.connected = false
       end

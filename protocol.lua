@@ -74,8 +74,8 @@ local TYPE_TAB = {
 local FLAGS_TRANSFER_TAB = {
 	[0x00] = function (flags)
 		return {
-			end_stream = flags & 0x01 == 0x01 and true,
-			padded = flags & 0x08 == 0x08 and true,
+			end_stream = flags & 0x01 == 0x01 and true or false,
+			padded = flags & 0x08 == 0x08 and true or false,
 		}
 	end,
 	[0x01] = function (flags)
@@ -196,7 +196,7 @@ local function sock_read(sock, bytes)
       return nil, err
     end
 		buffers[#buffers+1] = buffer
-		if bytes <= #buffer then
+		if bytes == #buffer then
 			break
 		end
 		bytes = bytes - #buffer

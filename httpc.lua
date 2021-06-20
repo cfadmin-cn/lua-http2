@@ -36,13 +36,13 @@ function client:ctor(opt)
   self.connected = false
   self.domain = opt.domain
   self.sid = nil
-  -- self.keepalives = 120
+  self.alpn = true
   self.waits = new_tab(0, 64)
 end
 
--- function client:keepalive(timeout)
---   self.keepalives = toint(timeout) and toint(timeout) > 120 and toint(timeout) or 120
--- end
+function client:no_alpn()
+  self.alpn = false
+end
 
 function client:connect(opt)
   if not self.info then
@@ -64,7 +64,7 @@ function client:connect(opt)
       self:close()
       return nil, "The server not support tls."
     end
-    if sock:ssl_get_alpn() ~= 'h2' then
+    if self.alpn and sock:ssl_get_alpn() ~= 'h2' then
       self:close()
       return nil, "The server not support http2 protocol in tls."
     end
@@ -80,19 +80,6 @@ function client:connect(opt)
     self:close()
     return nil, err
   end
-  -- 需要定期发送ping消息保持连接
-  -- self.keeper = cf.at(self.keepalives, function()
-  --   if not self.connected then
-  --     return
-  --   end
-  --   return self:send(function ( )
-  --     if not send_ping(self.sock, 0x00, string.rep('\x00', 8)) then
-  --       self:close()
-  --       return false
-  --     end
-  --     return true
-  --   end)
-  -- end)
   -- 清除握手超时时间
   sock._timeout = nil
   self.connected = true

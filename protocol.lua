@@ -189,19 +189,27 @@ Frame Payload : 是帧主体内容由帧类型决定;
 ]]
 
 local function sock_read(sock, bytes)
-	local buffers = new_tab(16, 0)
-	while 1 do
-		local buffer, err = sock:recv(bytes)
-    if not buffer then
-      return nil, err
-    end
-		buffers[#buffers+1] = buffer
-		if bytes == #buffer then
-			break
-		end
-		bytes = bytes - #buffer
+	local buffer = sock:recv(bytes)
+	if not buffer then
+		return
 	end
-	return concat(buffers)
+	if #buffer == bytes then
+		return buffer
+	end
+	bytes = bytes - #buffer
+	local buffers = {buffer}
+  local sock_recv = sock.recv
+	while 1 do
+		buffer = sock_recv(sock, bytes)
+		if not buffer then
+			return
+		end
+    bytes = bytes - #buffer
+		buffers[#buffers+1] = buffer
+		if bytes == 0 then
+			return concat(buffers)
+		end
+	end
 end
 
 local function sock_write(sock, data)
